@@ -164,6 +164,8 @@ Kubernetes API
       v
  Envoy Proxies
 ```
+Istiod converts Kubernetes and Istio configuration into configuration understood by Envoy and distributes it dynamically.
+
 
 ### Historical names
 
