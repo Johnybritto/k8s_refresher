@@ -113,7 +113,7 @@ Simple analogy:
 
 ```text
 CRD = Class
-CR  = Object
+CR  = Object / Instance
 ```
 
 ---
@@ -322,9 +322,9 @@ OLM Classic consists primarily of an OLM Operator and Catalog Operator. The OLM 
 
 ---
 
-## 9. OLM Architecture / Core Flow
+## 9. OLM Architecture / Core Flow — Understand This Clearly
 
-Memorize this:
+Use this as the high-level mental model:
 
 ```text
 Operator Catalog
@@ -339,48 +339,331 @@ InstallPlan
       ↓
 CSV
       ↓
-Operator Deployment
-      ↓
-CRD
+CRD + Operator Deployment
       ↓
 CR
       ↓
 Operator reconciles managed workload
 ```
 
-A more complete install flow:
+### Important accuracy point
+
+The diagram is conceptual rather than a strict creation order. **CRDs are normally installed as part of the InstallPlan/CSV installation process before or alongside the Operator Deployment**, because the custom API type must exist before users can create CRs and before the Operator can effectively manage those resources.
+
+The easiest way to understand the complete flow is to ask one question at each stage.
+
+### 9.1 Operator Catalog — What Operators are available?
+
+The Operator catalog contains metadata about Operators, packages and versions that can be made available to the cluster.
+
+Think of it as the backend inventory behind the OperatorHub experience.
+
+Example:
 
 ```text
-1. Operator exists in an Operator catalog
-              ↓
-2. CatalogSource exposes metadata
-              ↓
-3. Administrator selects Operator/channel
-              ↓
-4. Subscription is created
-              ↓
-5. OLM resolves version and dependencies
-              ↓
-6. InstallPlan is created
-              ↓
-7. InstallPlan is approved
-   automatically or manually
-              ↓
-8. CSV is created
-              ↓
-9. OLM validates requirements
-   - CRDs
-   - RBAC
-   - APIs
-   - dependencies
-   - OperatorGroup
-              ↓
-10. Operator Deployment is created
-              ↓
-11. CSV becomes Succeeded
-              ↓
-12. Operator watches CRs
+Catalog
+├── Kafka Operator
+├── OpenShift Virtualization
+├── Database Operator
+└── Observability Operator
 ```
+
+At this point nothing is installed merely because it exists in the catalog.
+
+### 9.2 CatalogSource — Where does OpenShift get that Operator catalog from?
+
+A `CatalogSource` tells OLM where a particular set of Operator metadata is available.
+
+Common examples include:
+
+```text
+redhat-operators
+certified-operators
+community-operators
+```
+
+Command:
+
+```bash
+oc get catsrc -n openshift-marketplace
+```
+
+Easy distinction:
+
+```text
+Catalog       = Operator content / inventory
+CatalogSource = where OLM gets that catalog content from
+```
+
+If the CatalogSource is unhealthy or unavailable, OLM may not be able to discover versions or resolve an installation/upgrade.
+
+### 9.3 Package / Channel — Which Operator and which update stream?
+
+An Operator is exposed as a **package**. The package can contain multiple versions and one or more **channels**.
+
+Example:
+
+```text
+Kafka Operator package
+    │
+    ├── stable
+    │    ├── 2.0
+    │    ├── 2.1
+    │    └── 2.2
+    │
+    └── candidate
+         └── 2.3
+```
+
+A channel represents an update stream.
+
+Think:
+
+```text
+Package = which Operator?
+Channel = which supported stream of versions should I follow?
+```
+
+### 9.4 Subscription — I want this Operator
+
+When you install an Operator through OperatorHub, a `Subscription` expresses your desired state to OLM.
+
+It effectively says:
+
+> Install this Operator package from this CatalogSource, follow this channel, and use this InstallPlan approval policy.
+
+Example:
+
+```yaml
+apiVersion: operators.coreos.com/v1alpha1
+kind: Subscription
+metadata:
+  name: kafka-operator
+  namespace: operators
+spec:
+  name: kafka-operator
+  source: redhat-operators
+  sourceNamespace: openshift-marketplace
+  channel: stable
+  installPlanApproval: Manual
+```
+
+Think:
+
+```text
+Subscription = desired Operator + source + channel + approval policy
+```
+
+### 9.5 InstallPlan — What exactly must OLM install or change?
+
+OLM reads the Subscription, resolves the appropriate version and dependencies, and creates an `InstallPlan`.
+
+The InstallPlan represents the set of actions/resources required for that installation or upgrade.
+
+It may involve:
+
+```text
+CSV
+CRDs
+RBAC
+ServiceAccounts
+Deployments
+required APIs / dependencies
+```
+
+Easy distinction:
+
+```text
+Subscription = WHAT I want
+InstallPlan  = HOW OLM plans to satisfy it
+```
+
+If the Subscription uses manual approval, the InstallPlan waits until an administrator approves it.
+
+### 9.6 CSV — What does this exact Operator version require and how should it run?
+
+CSV means **ClusterServiceVersion**.
+
+Do not confuse it with the OpenShift cluster version.
+
+A CSV represents one specific version of an Operator, for example:
+
+```text
+kafka-operator.v2.2.0
+```
+
+The CSV can describe:
+
+```text
+Operator version
+install/deployment strategy
+RBAC / permissions
+CRDs owned
+CRDs or APIs required
+dependencies
+Operator metadata
+```
+
+Think:
+
+```text
+CSV = installation blueprint / metadata for one Operator version
+```
+
+### 9.7 CRD — Introduce a new API type
+
+The installation process creates the Operator's required CRDs.
+
+Suppose the Kafka Operator introduces:
+
+```text
+kind: Kafka
+```
+
+Before the CRD exists, Kubernetes/OpenShift does not natively know what a `Kafka` object is.
+
+After the CRD is registered, the API server understands that new resource type.
+
+Think:
+
+```text
+CRD = definition/schema of a new Kubernetes API type
+```
+
+### 9.8 Operator Deployment — Run the controller
+
+OLM also creates the actual Operator workload according to the CSV install strategy.
+
+Conceptually:
+
+```text
+Deployment
+    ↓
+kafka-operator-controller
+    ↓
+Operator Pod
+```
+
+Now the controller code that understands Kafka-specific operations is actually running in the cluster.
+
+### 9.9 CR — User creates the desired application instance
+
+Once the CRD exists, a user can create a Custom Resource.
+
+Example:
+
+```yaml
+apiVersion: kafka.example.io/v1
+kind: Kafka
+metadata:
+  name: payment-kafka
+spec:
+  replicas: 3
+```
+
+Relationship:
+
+```text
+Kafka CRD
+   ↓
+payment-kafka CR
+```
+
+Easy analogy:
+
+```text
+CRD = Class
+CR  = Object / Instance
+```
+
+### 9.10 Operator reconciliation — Make reality match the CR
+
+The running Operator watches the CR.
+
+For example, it sees:
+
+```text
+payment-kafka
+replicas = 3
+storage = X
+configuration = Y
+```
+
+It can then create and manage whatever underlying OpenShift/Kubernetes resources are required:
+
+```text
+StatefulSets / Deployments
+Pods
+Services
+PVCs
+Secrets
+ConfigMaps
+Routes
+Jobs
+etc.
+```
+
+It continuously performs reconciliation:
+
+```text
+Desired State
+     ↓
+    CR
+     ↓
+ Operator
+     ↓
+Compare desired vs actual
+     ↓
+Create / update / delete resources
+     ↓
+Actual State
+```
+
+If actual state drifts from desired state, the Operator attempts to reconcile it back.
+
+### The entire flow in plain English
+
+```text
+Catalog
+   ↓
+What Operators are available?
+
+CatalogSource
+   ↓
+Where does OLM obtain the catalog from?
+
+Package / Channel
+   ↓
+Which Operator and which update stream?
+
+Subscription
+   ↓
+I want this Operator/channel.
+
+InstallPlan
+   ↓
+What must OLM install or change?
+
+CSV
+   ↓
+How should this specific Operator version be installed?
+
+CRD + Operator Deployment
+   ↓
+Register the custom API and run the controller.
+
+CR
+   ↓
+User declares the desired application state.
+
+Operator reconciliation
+   ↓
+Continuously make actual resources match that desired state.
+```
+
+### Interview answer to memorize
+
+> The catalog tells OpenShift what Operators are available, the CatalogSource tells OLM where that content comes from, the Subscription says which Operator and channel I want, the InstallPlan calculates what must be installed, and the CSV describes the installation requirements for that specific Operator version. During installation, the required CRDs and Operator deployment are created. The CRD introduces the custom API type, the user creates a CR representing the desired state, and the running Operator continuously reconciles that CR into the required Kubernetes/OpenShift resources.
 
 ---
 
@@ -482,22 +765,6 @@ A Subscription expresses intent:
 
 > Install and track this Operator package from this catalog and channel.
 
-Example:
-
-```yaml
-apiVersion: operators.coreos.com/v1alpha1
-kind: Subscription
-metadata:
-  name: my-operator
-  namespace: operators
-spec:
-  channel: stable
-  name: my-operator
-  source: redhat-operators
-  sourceNamespace: openshift-marketplace
-  installPlanApproval: Automatic
-```
-
 Important fields:
 
 ```text
@@ -512,13 +779,7 @@ Commands:
 
 ```bash
 oc get subscription -A
-```
-
-```bash
 oc get sub -n <namespace>
-```
-
-```bash
 oc describe sub <operator> -n <namespace>
 ```
 
@@ -541,8 +802,6 @@ conditions
 installPlanApproval: Automatic
 ```
 
-Flow:
-
 ```text
 new compatible version
       ↓
@@ -558,8 +817,6 @@ upgrade proceeds
 ```yaml
 installPlanApproval: Manual
 ```
-
-Flow:
 
 ```text
 new compatible version
@@ -583,36 +840,11 @@ The Subscription says **what you want**.
 
 The InstallPlan represents **how OLM plans to install/upgrade it**.
 
-Conceptually:
-
-```text
-Subscription = desired Operator/channel
-InstallPlan  = calculated installation/upgrade actions
-```
-
-An InstallPlan may include resources such as:
-
-- CSVs
-- CRDs
-- RBAC objects
-- ServiceAccounts
-- Deployments
-
 Commands:
 
 ```bash
 oc get installplan -n <namespace>
-```
-
-or:
-
-```bash
 oc get ip -n <namespace>
-```
-
-Detailed view:
-
-```bash
 oc describe ip <installplan> -n <namespace>
 ```
 
@@ -631,17 +863,9 @@ oc patch installplan <name> \
 
 CSV stands for **ClusterServiceVersion**.
 
-Do not confuse it with the OpenShift cluster version.
-
 Think of CSV as:
 
 > The metadata and installation definition for a specific Operator version.
-
-Example:
-
-```text
-elasticsearch-operator.v5.8.0
-```
 
 A CSV can define:
 
@@ -658,13 +882,7 @@ Commands:
 
 ```bash
 oc get csv -A
-```
-
-```bash
 oc get csv -n <namespace>
-```
-
-```bash
 oc describe csv <csv-name> -n <namespace>
 ```
 
@@ -680,11 +898,7 @@ Replacing
 Deleting
 ```
 
-Normally the target state is:
-
-```text
-Succeeded
-```
+Normally the target state is `Succeeded`.
 
 ---
 
@@ -696,17 +910,7 @@ Commands:
 
 ```bash
 oc get operatorgroup -A
-```
-
-or:
-
-```bash
 oc get og -A
-```
-
-Detailed view:
-
-```bash
 oc describe og <name> -n <namespace>
 ```
 
@@ -718,8 +922,6 @@ SingleNamespace
 MultiNamespace
 AllNamespaces
 ```
-
-### Meaning
 
 **OwnNamespace** — Operator manages the namespace where it runs.
 
@@ -737,7 +939,7 @@ This is especially important in multi-tenant cluster design.
 
 ## 18. Core OLM Components
 
-Useful namespaces:
+Useful namespace:
 
 ```bash
 oc get pods -n openshift-operator-lifecycle-manager
@@ -751,7 +953,7 @@ catalog-operator
 packageserver
 ```
 
-Marketplace components/catalogs are commonly checked under:
+Marketplace/catalog components:
 
 ```bash
 oc get pods -n openshift-marketplace
@@ -849,8 +1051,6 @@ metadata
 
 A catalog/index can contain multiple packages and versions.
 
-Conceptually:
-
 ```text
 Catalog / Index
    │
@@ -927,17 +1127,7 @@ This prevents random troubleshooting.
 
 ```bash
 oc get co
-```
-
-Check OLM components:
-
-```bash
 oc get pods -n openshift-operator-lifecycle-manager
-```
-
-Check marketplace/catalog components:
-
-```bash
 oc get pods -n openshift-marketplace
 ```
 
@@ -947,16 +1137,13 @@ oc get pods -n openshift-marketplace
 
 ```bash
 oc get catsrc -n openshift-marketplace
-```
-
-```bash
 oc describe catsrc <catalog-name> -n openshift-marketplace
 ```
 
-Questions to answer:
+Questions:
 
 - Is catalog content available?
-- Is catalog registry/pod reachable?
+- Is the catalog endpoint/pod reachable?
 - Is the required package/version visible?
 
 ---
@@ -965,9 +1152,6 @@ Questions to answer:
 
 ```bash
 oc get sub -n <operator-namespace>
-```
-
-```bash
 oc describe sub <operator> -n <operator-namespace>
 ```
 
@@ -981,17 +1165,12 @@ conditions
 installPlanRef
 ```
 
-This tells you what version OLM wants, what is currently installed, and whether an InstallPlan exists.
-
 ---
 
 ## 28. Step 4 — Check InstallPlan
 
 ```bash
 oc get ip -n <namespace>
-```
-
-```bash
 oc describe ip <installplan> -n <namespace>
 ```
 
@@ -1002,7 +1181,7 @@ Approval = Manual
 Approved = false
 ```
 
-In that case the Operator may simply be waiting for change approval rather than being broken.
+The Operator may simply be waiting for approval rather than being broken.
 
 ---
 
@@ -1010,9 +1189,6 @@ In that case the Operator may simply be waiting for change approval rather than 
 
 ```bash
 oc get csv -n <namespace>
-```
-
-```bash
 oc describe csv <csv> -n <namespace>
 ```
 
@@ -1026,7 +1202,7 @@ Conditions
 Events
 ```
 
-If the CSV is not `Succeeded`, the reason/conditions usually point to the next layer.
+If the CSV is not `Succeeded`, the conditions usually point to the next layer.
 
 ---
 
@@ -1034,9 +1210,6 @@ If the CSV is not `Succeeded`, the reason/conditions usually point to the next l
 
 ```bash
 oc get og -n <namespace>
-```
-
-```bash
 oc describe og <name> -n <namespace>
 ```
 
@@ -1049,21 +1222,13 @@ Operator supports SingleNamespace only
 OperatorGroup targets AllNamespaces
 ```
 
-This can fail.
-
 ---
 
 ## 31. Step 7 — Check Operator Deployment / Pods
 
 ```bash
 oc get pods -n <namespace>
-```
-
-```bash
 oc describe pod <pod> -n <namespace>
-```
-
-```bash
 oc logs <operator-pod> -n <namespace>
 ```
 
@@ -1111,9 +1276,6 @@ quota problems
 
 ```bash
 oc get crd | grep <operator>
-```
-
-```bash
 oc describe crd <crd-name>
 ```
 
@@ -1134,13 +1296,7 @@ If logs contain `forbidden`, inspect permissions.
 
 ```bash
 oc get sa -n <namespace>
-```
-
-```bash
 oc get role,rolebinding -n <namespace>
-```
-
-```bash
 oc get clusterrole,clusterrolebinding
 ```
 
@@ -1200,8 +1356,6 @@ application-specific status
 
 An Operator can be healthy while the managed workload is unhealthy.
 
-This is a strong interview point.
-
 ---
 
 ## 37. Scenario — Operator Degraded After Upgrade
@@ -1240,13 +1394,11 @@ Operators provide:
 - automated lifecycle management
 - less dependence on manual runbooks
 
-Instead of many administrators executing a large operational runbook manually, an Operator can encode part of that operational logic into software.
+Instead of administrators executing a large operational runbook manually, an Operator can encode part of that operational logic into software.
 
 ---
 
 ## 39. Operator Risks / Governance
-
-Operators are powerful but they also introduce risk.
 
 Potential risks:
 
@@ -1280,10 +1432,6 @@ Backup / rollback / recovery procedures
 ---
 
 ## 40. Manual vs Automatic Upgrades — Interview Position
-
-Do not say "always manual" or "always automatic".
-
-Better answer:
 
 > It depends on environment and Operator criticality. In development, automatic upgrades may be acceptable. In production or regulated environments, I would usually prefer controlled upgrade channels with manual InstallPlan approval after validating compatibility, release notes, CRD/API changes, application dependencies, backup and rollback options.
 
@@ -1327,7 +1475,7 @@ Be aware that newer OLM capabilities exist, but do not overcomplicate the answer
 
 ## 43. 60-second OLM Answer
 
-> OLM manages the lifecycle of add-on Operators in OpenShift. Operator metadata and versions are exposed through a CatalogSource. When we subscribe to an Operator package and channel, OLM resolves the required version and dependencies and generates an InstallPlan. Once that plan is approved, OLM creates the appropriate CSV and required CRDs, RBAC and Operator deployment. The CSV represents that specific Operator version and its installation requirements. OperatorGroup controls the namespaces the Operator can watch. For upgrades, the Subscription follows the selected channel and OLM generates a new InstallPlan based on the supported upgrade path. If an Operator fails, I normally troubleshoot from CatalogSource → Subscription → InstallPlan → CSV → Operator pod/logs → managed CR.
+> OLM manages the lifecycle of add-on Operators in OpenShift. Operator metadata and versions are exposed through a CatalogSource. When we subscribe to an Operator package and channel, OLM resolves the required version and dependencies and generates an InstallPlan. Once that plan is approved, OLM installs the required CSV, CRDs, RBAC and Operator deployment. The CSV represents that specific Operator version and its installation requirements. OperatorGroup controls the namespaces the Operator can watch. For upgrades, the Subscription follows the selected channel and OLM generates a new InstallPlan based on the supported upgrade path. If an Operator fails, I normally troubleshoot from CatalogSource → Subscription → InstallPlan → CSV → Operator pod/logs → managed CR.
 
 ---
 
@@ -1413,32 +1561,28 @@ You should be able to answer all of these confidently:
 # Final Memory Map
 
 ```text
-OperatorHub
-   ↓
+Operator Catalog
+      ↓
 CatalogSource
-   ↓
+      ↓
 Package / Channel
-   ↓
+      ↓
 Subscription
-   ↓
+      ↓
 InstallPlan
-   ↓
+      ↓
 CSV
-   ↓
-OperatorGroup / Scope
-   ↓
-Operator Deployment
-   ↓
-CRD
-   ↓
+      ↓
+CRD + Operator Deployment
+      ↓
 CR
-   ↓
+      ↓
 Reconciliation
-   ↓
+      ↓
 Managed Workload
 ```
 
-If troubleshooting, walk the chain from top to bottom instead of jumping randomly into pod logs.
+For troubleshooting, walk the chain from top to bottom instead of jumping randomly into pod logs.
 
 ---
 
