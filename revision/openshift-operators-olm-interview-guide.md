@@ -318,6 +318,8 @@ ClusterServiceVersion (CSV)
 OperatorGroup
 ```
 
+OLM Classic consists primarily of an OLM Operator and Catalog Operator. The OLM Operator handles CSV deployment when requirements are satisfied, while the Catalog Operator monitors catalogs, resolves packages/dependencies and produces InstallPlans.
+
 ---
 
 ## 9. OLM Architecture / Core Flow
