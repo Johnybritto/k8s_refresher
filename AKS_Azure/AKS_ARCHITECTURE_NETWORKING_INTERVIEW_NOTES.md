@@ -84,6 +84,272 @@ Customer-managed
 
 ---
 
+
+# 2A. AKS Automatic vs AKS Standard
+
+AKS now has two cluster operating modes:
+
+```text
+                    Azure Kubernetes Service
+                              |
+                  +-----------+-----------+
+                  |                       |
+                  v                       v
+          AKS Automatic              AKS Standard
+          opinionated /              configurable /
+          highly managed             operator controlled
+```
+
+Both are still AKS and both use the same core Kubernetes concepts. The main difference is **how much platform configuration and day-2 operation Azure performs for you**.
+
+## AKS Automatic
+
+AKS Automatic is the more opinionated, production-ready operating model.
+
+Azure preconfigures and operates many platform capabilities so the application/platform team does not have to assemble the baseline themselves.
+
+Typical Automatic behavior includes:
+
+- Azure-managed node provisioning and node auto-provisioning
+- managed system node pools
+- automatic scaling based on workload demand
+- automatic cluster upgrades through the stable channel
+- NodeImage OS upgrade channel
+- Azure RBAC for Kubernetes authorization
+- OIDC issuer and Workload Identity enabled
+- deployment safeguards/security controls enabled
+- monitoring defaults such as Managed Prometheus and Container Insights
+- HPA, VPA and KEDA capabilities available/preconfigured
+- production networking defaults
+- uptime SLA included
+- qualifying pod-readiness SLA
+- managed ingress/application-routing defaults
+
+For networking, the important interview point is:
+
+```text
+AKS Automatic
+      |
+      v
+Managed VNet / supported custom VNet
+      |
+      v
+Azure CNI Overlay
+      +
+Cilium data plane
+```
+
+So many of the networking decisions discussed elsewhere in this document are already selected for you in the Automatic baseline.
+
+Conceptually:
+
+```text
+Developer submits workload
+          |
+          v
+       Scheduler
+          |
+          v
+Node Auto Provisioning
+          |
+     selects/provisions
+     appropriate compute
+          |
+          v
+        Pod runs
+```
+
+The operator focuses more on **workloads and policies** than manually designing every node-pool lifecycle decision.
+
+## AKS Standard
+
+AKS Standard provides the traditional, highly configurable AKS operating model.
+
+You make explicit platform decisions such as:
+
+- node-pool design
+- VM SKU and pool topology
+- autoscaling configuration
+- system vs user pools
+- networking model
+- CNI/data-plane selection
+- ingress architecture
+- maintenance windows
+- cluster upgrade strategy
+- node-image upgrade strategy
+- monitoring integrations
+- security features and policy
+- public/private API exposure
+- API Server VNet Integration
+- egress architecture
+
+Conceptually:
+
+```text
+Platform Team
+     |
+     +--> design node pools
+     +--> choose networking
+     +--> configure autoscaling
+     +--> configure monitoring
+     +--> define upgrade strategy
+     +--> configure security
+     +--> manage lifecycle
+     |
+     v
+AKS Standard
+```
+
+## Side-by-Side Comparison
+
+| Area | AKS Automatic | AKS Standard |
+|---|---|---|
+| Operating model | Opinionated / highly managed | Granular operator control |
+| Best fit | Most new production workloads, application teams, fast onboarding | Platform teams, custom infrastructure requirements, existing automation |
+| Node pools | Azure manages system nodes and workload-driven node provisioning | You create/manage node pools |
+| Node scaling | Node auto-provisioning + workload scaling defaults | Cluster autoscaler/manual designs configured by operator |
+| VM selection | More constrained by supported Automatic capabilities | Greater control over VM SKUs/topology |
+| Networking | Opinionated production default, Azure CNI Overlay powered by Cilium | Broad choice of supported networking/data-plane models |
+| Security | Several hardened controls preconfigured | Features selected/configured by operator |
+| Monitoring | Important observability components enabled/defaulted | Explicitly enabled/configured |
+| Cluster upgrades | Automatic stable-channel behavior | Manual by default; automatic channels optional |
+| Node image upgrades | Automated channel | Operator controls strategy/channel |
+| Ingress | Managed application-routing defaults available/preconfigured | Bring your own or enable managed options |
+| Windows node pools | Not the primary Automatic model / use Standard for requirements needing Windows pools | Supported where AKS supports Windows |
+| Uptime SLA | Included by default | Depends on selected pricing tier/configuration |
+| Pod readiness SLA | Included for qualifying Automatic workloads | Not a Standard-mode feature |
+| Day-2 operations | Lower operational burden | Higher control and higher operational responsibility |
+
+## The Most Important Mental Model
+
+Do not think:
+
+```text
+Automatic = different Kubernetes
+Standard  = normal Kubernetes
+```
+
+Both are Kubernetes on AKS.
+
+Think:
+
+```text
+AKS Automatic
+    =
+Azure chooses and operates more
+of the platform defaults
+
+AKS Standard
+    =
+Platform team chooses and operates
+more of the platform configuration
+```
+
+## Relationship to Topics Already Covered
+
+### Node pools
+
+Standard:
+
+```text
+Platform team
+   |
+   +--> System Pool
+   +--> General Pool
+   +--> GPU Pool
+   +--> Memory Pool
+```
+
+Automatic:
+
+```text
+Workload requests
+      |
+      v
+Node Auto Provisioning
+      |
+      v
+AKS dynamically provisions
+appropriate compute
+```
+
+### Networking
+
+Standard can involve deliberate choices such as:
+
+```text
+Azure CNI Overlay
+Azure CNI Pod Subnet
+Cilium
+Calico
+custom VNet
+private cluster
+custom ingress
+custom egress
+```
+
+Automatic starts with a stronger opinionated baseline:
+
+```text
+Azure CNI Overlay
+       +
+Cilium
+       +
+managed networking defaults
+```
+
+### Upgrades
+
+Standard:
+
+```text
+Platform Team
+   |
+   +--> choose Kubernetes version
+   +--> control-plane upgrade
+   +--> node-pool upgrade
+   +--> node-image strategy
+   +--> maintenance window
+```
+
+Automatic:
+
+```text
+Azure-managed upgrade channels
+       |
+       +--> Kubernetes stable channel
+       +--> NodeImage channel
+       |
+       v
+less manual lifecycle management
+```
+
+## When Would I Choose Each?
+
+Choose **AKS Automatic** when:
+
+- starting a new production platform
+- you want strong defaults and lower operational overhead
+- application teams should not manage node infrastructure
+- standard Linux workloads fit the supported Automatic model
+- you want Azure to handle more scaling, security, monitoring and upgrades
+
+Choose **AKS Standard** when:
+
+- you need precise node-pool/topology control
+- you require custom networking or unusual routing
+- you need Windows node pools
+- you need VM SKUs or infrastructure patterns outside Automatic capabilities
+- you already have mature AKS automation
+- your organization requires explicit change control for upgrades
+- you need granular control over maintenance and lifecycle operations
+
+### Interview answer
+
+> AKS Automatic and AKS Standard use the same underlying Kubernetes concepts, but they differ in operational ownership. Automatic is an opinionated production-ready mode where Azure preconfigures and manages node provisioning, scaling, security, networking, monitoring and upgrades. Standard gives the platform team direct control over node pools, networking, scaling, upgrade strategy and cluster lifecycle. I would use Automatic for workloads that fit the standard production model and Standard when infrastructure, networking or operational requirements demand granular control.
+
+---
+
 # 3. kube-apiserver
 
 The API server is the **front door of Kubernetes**.
@@ -1550,6 +1816,31 @@ If Azure CNI Powered by Cilium is used, Cilium performs the service-routing data
 ## Q20. Which identity usually pulls from ACR?
 
 **Answer:** The kubelet/node identity is commonly used for ACR pull permissions. Do not confuse this with the control-plane identity or pod Workload Identity.
+
+---
+
+
+## Q21. What is the difference between AKS Automatic and AKS Standard?
+
+**Answer:** Both are AKS Kubernetes clusters. Automatic is the opinionated, highly managed operating model: Azure preconfigures and operates more of the node management, scaling, security, monitoring, networking and upgrade lifecycle. Standard gives the platform team granular control over those choices.
+
+---
+
+## Q22. Does AKS Automatic mean I no longer have Kubernetes worker nodes?
+
+**Answer:** No. Workloads still run on Kubernetes worker compute. The difference is that Azure manages node provisioning and scaling much more aggressively through the Automatic operating model instead of requiring you to manually design and maintain normal user node pools.
+
+---
+
+## Q23. What networking should I associate with AKS Automatic?
+
+**Answer:** The production baseline uses Azure CNI Overlay powered by Cilium, with more networking defaults managed by AKS. AKS Standard gives you a broader set of explicit networking choices.
+
+---
+
+## Q24. When would you choose AKS Standard instead of Automatic?
+
+**Answer:** Use Standard when you need granular infrastructure control such as custom node-pool topology, Windows nodes, specific VM requirements, custom networking/routing, explicit upgrade control, or existing platform automation that depends on direct cluster lifecycle management.
 
 ---
 
