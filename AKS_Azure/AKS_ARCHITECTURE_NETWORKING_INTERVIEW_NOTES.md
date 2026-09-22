@@ -1529,6 +1529,139 @@ Application Gateway
 
 ---
 
+
+# 30A. Backend Pools — Where They Fit
+
+A **backend pool** is the set of destinations that an Azure Load Balancer or Application Gateway can send traffic to.
+
+Think:
+
+```text
+Frontend IP / Listener
+        |
+        v
+Load-balancing / routing rule
+        |
+        v
+Backend Pool
+        |
+        v
+Backend targets
+```
+
+The backend targets can be things such as:
+
+- VM instances
+- VM Scale Set instances
+- private IPs
+- FQDNs
+- pod IPs in supported Application Gateway/AGIC designs
+
+The important point is:
+
+> **A VM or VMSS does not replace the backend pool. The VM/VMSS instances are members or targets of the backend pool.**
+
+## Azure Standard Load Balancer
+
+For AKS with an Azure Standard Load Balancer:
+
+```text
+Client
+  |
+  v
+Azure Standard Load Balancer
+  |
+  v
+Backend Pool
+  |
+  +--> AKS Node1
+  +--> AKS Node2
+  +--> AKS Node3
+  |
+  v
+kube-proxy / Cilium
+  |
+  v
+Pod
+```
+
+If the AKS node pool is VMSS-based:
+
+```text
+Azure Standard Load Balancer
+        |
+        v
+Backend Pool
+        |
+        v
+AKS VMSS instances
+   +--> Node1
+   +--> Node2
+   +--> Node3
+```
+
+In AKS, when you create a Kubernetes Service of type `LoadBalancer`, AKS/Azure normally manages the load-balancer rule, probe, frontend and backend-pool membership for you.
+
+So:
+
+> **Backend pool is required architecturally, but you usually do not manually maintain it in AKS.**
+
+## Application Gateway
+
+Application Gateway also uses backend pools.
+
+### In-cluster ingress pattern
+
+```text
+Application Gateway
+        |
+        v
+Backend Pool
+        |
+        v
+Private ingress frontend
+(often an Internal LB IP)
+        |
+        v
+Ingress Controller
+        |
+        v
+Service
+        |
+        v
+Pods
+```
+
+### AGIC pattern
+
+```text
+Application Gateway
+        |
+        v
+Backend Pool
+        |
+        v
+Pod IPs
+```
+
+With AGIC, the controller updates Application Gateway based on Kubernetes state, so pod IPs can become backend targets directly.
+
+## Memory line
+
+```text
+Backend Pool
+    =
+the list/group of destinations
+the Azure load-balancing service
+is allowed to send traffic to.
+
+VM / VMSS / IP / Pod
+    =
+members of that backend pool.
+```
+
+---
+
 # 31. ACR Integration
 
 Azure Container Registry stores container images.
@@ -1879,6 +2012,31 @@ If Azure CNI Powered by Cilium is used, Cilium performs the service-routing data
 ## Q24. When would you choose AKS Standard instead of Automatic?
 
 **Answer:** Use Standard when you need granular infrastructure control such as custom node-pool topology, Windows nodes, specific VM requirements, custom networking/routing, explicit upgrade control, or existing platform automation that depends on direct cluster lifecycle management.
+
+---
+
+
+## Q25. Is a backend pool required for Azure Standard Load Balancer?
+
+**Answer:** Yes. A backend pool is a core part of Azure Standard Load Balancer. In AKS, the backend pool normally contains the worker-node instances, and AKS/Azure manages that membership automatically.
+
+---
+
+## Q26. If my AKS workers are in a VMSS, do I still need a backend pool?
+
+**Answer:** Yes. The VMSS does not replace the backend pool. The VMSS instances are the backend targets/members that the load balancer sends traffic to.
+
+---
+
+## Q27. Can I use individual VMs instead of a VMSS in a backend pool?
+
+**Answer:** Yes. Azure load-balancing services can use individual VM/IP targets as backend members. The backend pool is still required; only the type of backend target changes.
+
+---
+
+## Q28. Where does the backend pool fit with Application Gateway and AKS?
+
+**Answer:** Application Gateway sends traffic to a configured backend pool. With an in-cluster ingress design, the backend target can be the private ingress frontend such as an Internal Load Balancer IP. With AGIC, the backend pool can be maintained with pod IPs directly.
 
 ---
 
