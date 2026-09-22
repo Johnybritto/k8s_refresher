@@ -1446,14 +1446,13 @@ This is a very common whiteboard packet flow.
 
 # 30. Azure Application Gateway
 
-Application Gateway operates at Layer 7 and can provide:
+Application Gateway is a Layer-7 HTTP/HTTPS load balancer and can provide:
 
-- HTTP/HTTPS routing
+- host/path routing
 - TLS termination
 - WAF
-- host/path routing
 
-A common architecture is:
+For an AKS cluster using an **in-cluster ingress controller** such as NGINX or Istio, remember the logical flow as:
 
 ```text
 Internet
@@ -1462,19 +1461,60 @@ Internet
 Application Gateway / WAF
    |
    v
-Internal Azure Load Balancer
+Ingress Controller
    |
    v
-AKS Node
+Kubernetes Service
    |
    v
-Ingress/Gateway Pod
-   |
-   v
+Application Pods
+```
+
+In practice, the ingress controller normally needs a private reachable frontend. A common implementation is:
+
+```text
+Application Gateway
+        |
+        v
+Internal Load Balancer
+(private frontend for ingress)
+        |
+        v
+Ingress Controller Pod
+        |
+        v
 Service
+        |
+        v
+Application Pods
+```
+
+The **Internal Load Balancer is not mandatory in every Application Gateway design**. It is simply one common way to expose an in-cluster ingress controller privately.
+
+### AGIC exception
+
+When using **Application Gateway Ingress Controller (AGIC)**, Application Gateway itself acts as the AKS ingress data plane and can use pod private IPs directly:
+
+```text
+Internet
    |
    v
-Application Pod
+Application Gateway / WAF
+   |
+   v
+Application Pods
+```
+
+AGIC watches Kubernetes Ingress/Service/endpoint state and programs Application Gateway accordingly, so an extra internal Load Balancer, NodePort, or kube-proxy hop isn't required for this path.
+
+### Memory line
+
+```text
+In-cluster ingress:
+App Gateway -> (private ILB) -> Ingress -> Service -> Pods
+
+AGIC:
+App Gateway -> Pods
 ```
 
 Remember:
@@ -1486,8 +1526,6 @@ Azure Load Balancer
 Application Gateway
   -> Layer 7 + WAF
 ```
-
-Modern Application Gateway for Containers can use a more direct pod-backend model depending on the AKS networking design.
 
 ---
 
@@ -1809,7 +1847,7 @@ If Azure CNI Powered by Cilium is used, Cilium performs the service-routing data
 
 ## Q19. What is the difference between Azure Load Balancer and Application Gateway?
 
-**Answer:** Azure Load Balancer is primarily Layer 4 TCP/UDP load balancing. Application Gateway is Layer 7 HTTP/HTTPS routing and can provide TLS termination and WAF capabilities.
+**Answer:** Azure Load Balancer is primarily Layer 4 TCP/UDP load balancing. Application Gateway is Layer 7 HTTP/HTTPS routing and can provide TLS termination and WAF. With an in-cluster ingress controller, Application Gateway can forward to a private ingress frontend; with AGIC, Application Gateway can route directly to pod private IPs.
 
 ---
 
