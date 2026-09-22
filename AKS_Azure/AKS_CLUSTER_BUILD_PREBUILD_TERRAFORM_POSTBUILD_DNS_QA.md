@@ -1179,3 +1179,537 @@ API FQDN -> Private DNS -> AKS Private API Endpoint
 APPLICATION DNS:
 *.apps -> Private DNS -> Traefik ILB -> Traefik -> Service -> Pods
 ```
+
+
+---
+
+# 15. Follow-up Q&A — Are Subscription, RGs and VNet Pre-Created?
+
+## Q: In our current model, are the subscription, resource groups and VNet already created?
+
+Yes — based on the reviewed tfvars and architecture, the AKS build appears to **consume an existing Azure landing zone** rather than creating the entire Azure environment from scratch.
+
+Conceptually:
+
+```text
+Already Existing in Azure
+-------------------------
+Subscription
+   |
+   +-- Network Resource Group
+   |       |
+   |       +-- VNet
+   |
+   +-- DNS Resource Group
+   |       |
+   |       +-- Private DNS Zone
+   |
+   +-- Identity Resource Group
+           |
+           +-- User Assigned Managed Identity
+```
+
+The AKS Terraform Enterprise workspace receives identifiers such as:
+
+```text
+subscription ID
+VNet resource-group name
+VNet name
+private-DNS resource-group name
+private-DNS zone name
+managed-identity resource-group/name
+```
+
+and uses those values as inputs.
+
+The exact implementation may use Terraform data sources, module inputs, remote state outputs or TFE workspace variables.
+
+Example-level concept:
+
+```hcl
+data "azurerm_virtual_network" "existing_vnet" {
+  name                = var.virtual_network_name
+  resource_group_name = var.virtual_network_resource_group
+}
+
+data "azurerm_user_assigned_identity" "aks_identity" {
+  name                = var.managed_identity_name
+  resource_group_name = var.managed_identity_resource_group
+}
+```
+
+Interview wording:
+
+> The core Azure landing zone already exists. Our AKS TFE workspace consumes the subscription, enterprise VNet, private DNS and managed identity as inputs and then provisions the AKS-specific resources.
+
+One item should not be stated as fact without the main Terraform module: whether the AKS resource group itself is pre-created or created by the AKS workspace.
+
+---
+
+# 16. What Role Does Terraform Enterprise Play?
+
+TFE should be thought of as the execution and orchestration platform.
+
+```text
+Git Repository / Terraform Modules
+              |
+              v
+        TFE Workspace
+              |
+       Variables / tfvars
+              |
+              v
+        terraform plan
+              |
+              v
+        terraform apply
+              |
+              v
+             Azure
+```
+
+TFE does not replace Azure resources. It runs the Terraform workflow that creates, reads or updates those resources.
+
+---
+
+# 17. If We Had to Build Everything from Scratch
+
+A clean enterprise design is to split the build into two logical Terraform layers.
+
+```text
+TFE Workspace 1
+LANDING ZONE
+     |
+     +-- Subscription (usually supplied/vended centrally)
+     +-- Resource Groups
+     +-- VNet
+     +-- Subnets
+     +-- NSGs
+     +-- Route Tables
+     +-- Private DNS
+     +-- Managed Identity
+     +-- Policy / RBAC / Tags
+     |
+     v
+Outputs
+     |
+     v
+TFE Workspace 2
+AKS PLATFORM
+     |
+     +-- AKS Cluster
+     +-- System Node Pool
+     +-- User Node Pool
+     +-- BYOCNI / Cilium
+     +-- Cluster-specific Azure integrations
+     +-- Post-build bootstrap
+```
+
+This keeps the **network/landing-zone lifecycle separate from the AKS lifecycle**.
+
+---
+
+# 18. Scratch Build — Step-by-Step
+
+## Step 1 — Subscription
+
+In most enterprise environments, the subscription is not created by the AKS team itself.
+
+Typical model:
+
+```text
+Tenant / Management Group
+         |
+         v
+Subscription Vending / Cloud Platform Team
+         |
+         v
+Target Azure Subscription
+```
+
+The subscription is then handed to the landing-zone Terraform workflow.
+
+If the organization automates subscription vending, that can be a separate Terraform or platform workflow.
+
+---
+
+## Step 2 — Create Resource Groups
+
+Terraform can create separate resource groups for network, AKS, DNS and identity.
+
+Gist:
+
+```hcl
+resource "azurerm_resource_group" "network" {
+  name     = "rg-network-prod"
+  location = "..."
+}
+
+resource "azurerm_resource_group" "aks" {
+  name     = "rg-aks-prod"
+  location = "..."
+}
+```
+
+Conceptually:
+
+```text
+Subscription
+ |
+ +-- Network RG
+ +-- AKS RG
+ +-- DNS RG
+ +-- Identity RG
+```
+
+Mandatory enterprise controls such as tags, RBAC, policy and locks can also be applied here.
+
+---
+
+## Step 3 — Create the VNet
+
+The landing-zone workspace provisions the VNet after IP ranges have been approved.
+
+Gist:
+
+```hcl
+resource "azurerm_virtual_network" "aks" {
+  name          = "vnet-prod"
+  address_space = ["10.x.0.0/16"]
+}
+```
+
+Before choosing the range, confirm no overlap with:
+
+- On-premises networks
+- Other Azure VNets
+- AWS/GCP networks where connected
+- Pod CIDRs
+- Service CIDRs
+- VPN/ExpressRoute-routed networks
+
+---
+
+## Step 4 — Create the AKS Subnet
+
+The AKS node subnet is created inside the VNet.
+
+Gist:
+
+```hcl
+resource "azurerm_subnet" "aks" {
+  virtual_network_name = azurerm_virtual_network.aks.name
+  address_prefixes     = ["10.x.10.0/23"]
+}
+```
+
+Conceptually:
+
+```text
+VNet
+ |
+ +-- AKS Node Subnet
+ |
+ +-- Other enterprise subnets as required
+```
+
+Whether this subnet belongs in the landing-zone workspace or the AKS workspace is an architectural choice. The important point is to define ownership clearly and avoid two workspaces managing the same subnet.
+
+---
+
+## Step 5 — Create and Associate the NSG
+
+Create the Network Security Group and associate it with the subnet.
+
+```text
+AKS Subnet
+    |
+    v
+   NSG
+```
+
+The NSG contains the enterprise-approved traffic rules required for cluster and platform connectivity.
+
+---
+
+## Step 6 — Create Route Table / Firewall Path
+
+If forced tunneling or centralized egress is required:
+
+```text
+AKS Subnet
+    |
+    v
+Route Table
+    |
+    v
+Azure Firewall / NVA
+    |
+    v
+Corporate Network / Internet
+```
+
+Terraform can create the route table and associate it with the AKS subnet.
+
+---
+
+## Step 7 — Create Private DNS
+
+Create or consume the private DNS zones required for the environment.
+
+Conceptually:
+
+```text
+Private DNS
+   |
+   +-- AKS API private DNS
+   |
+   +-- Application DNS zone / wildcard
+```
+
+Then link the required private DNS zone to the relevant VNet.
+
+Gist:
+
+```hcl
+resource "azurerm_private_dns_zone" "aks" {
+  name = "..."
+}
+
+resource "azurerm_private_dns_zone_virtual_network_link" "aks" {
+  ...
+}
+```
+
+Remember:
+
+```text
+AKS API record
+   -> created/managed as part of private AKS provisioning
+
+*.apps record
+   -> platform/DNS process
+   -> points to Traefik ILB private IP
+```
+
+---
+
+## Step 8 — Create User Assigned Managed Identity
+
+Gist:
+
+```hcl
+resource "azurerm_user_assigned_identity" "aks" {
+  name = "id-aks-prod"
+}
+```
+
+Then assign the Azure RBAC permissions required by the platform design.
+
+Conceptually:
+
+```text
+Managed Identity
+     |
+     +-- Network permissions as required
+     +-- Private DNS permissions as required
+     +-- Other Azure resource permissions
+```
+
+Exact roles must follow the actual implementation.
+
+---
+
+## Step 9 — Create Other Platform Dependencies
+
+Depending on the platform design, the landing-zone/platform workspace may create or provide:
+
+- ACR
+- Key Vault
+- Event Hub / Log Analytics
+- Private Endpoints
+- Monitoring resources
+- Firewall rules
+- DNS forwarding
+
+These resources are then passed to the AKS workspace by ID/name rather than rediscovered manually.
+
+---
+
+# 19. Passing Landing-Zone Outputs to the AKS TFE Workspace
+
+The landing-zone Terraform can expose outputs:
+
+```hcl
+output "vnet_id" {
+  value = azurerm_virtual_network.aks.id
+}
+
+output "aks_subnet_id" {
+  value = azurerm_subnet.aks.id
+}
+
+output "managed_identity_id" {
+  value = azurerm_user_assigned_identity.aks.id
+}
+
+output "private_dns_zone_id" {
+  value = azurerm_private_dns_zone.aks.id
+}
+```
+
+The AKS workspace can consume those values using one of several enterprise patterns:
+
+1. Terraform remote state
+2. TFE workspace outputs / run triggers
+3. TFE variable sets / workspace variables
+4. Pipeline-provided variables
+5. Explicit module inputs
+
+Conceptually:
+
+```text
+Landing-Zone Workspace
+        |
+        +-- VNet ID
+        +-- Subnet ID
+        +-- DNS Zone ID
+        +-- Identity ID
+        |
+        v
+AKS TFE Workspace
+        |
+        v
+AKS Cluster
+```
+
+The exact mechanism should be stated only when confirmed from the real TFE configuration.
+
+---
+
+# 20. Why Keep Landing Zone and AKS in Separate Workspaces?
+
+The strongest operational reason is **lifecycle isolation**.
+
+Bad coupling:
+
+```text
+terraform destroy AKS
+        |
+        X
+should NOT destroy
+VNet / DNS / Enterprise Network
+```
+
+Preferred model:
+
+```text
+Landing Zone Lifecycle
+        |
+        +-- Subscription
+        +-- VNet
+        +-- DNS
+        +-- Identity
+
+AKS Lifecycle
+        |
+        +-- Cluster
+        +-- Node Pools
+        +-- Cluster Networking
+        +-- Platform Add-ons
+```
+
+Benefits:
+
+- Rebuild AKS without rebuilding the enterprise network
+- Reduce blast radius
+- Clear ownership
+- Separate permissions
+- Easier change control
+- Reuse landing-zone resources for multiple clusters
+- Cleaner Terraform state
+
+---
+
+# 21. Follow-up Interview Q&A
+
+### Q: If the VNet already exists, how does AKS Terraform use it?
+The AKS workspace receives the VNet name/ID and resource-group information as inputs and reads/uses that existing resource rather than creating another VNet.
+
+### Q: Is TFE the source of the VNet?
+Not exactly. Azure is where the VNet exists. TFE runs Terraform and provides the state, variables and workflow that allow one workspace to create or another workspace to consume that Azure VNet.
+
+### Q: If I create the VNet using Terraform, should AKS be in the same workspace?
+It can be technically, but for a large enterprise platform it is usually cleaner to separate landing-zone/network resources from the AKS lifecycle.
+
+### Q: Why separate the workspaces?
+So destroying or rebuilding the AKS cluster cannot accidentally destroy the VNet, DNS or other shared enterprise resources.
+
+### Q: How does the AKS workspace know the subnet ID?
+The subnet ID can be passed from the landing-zone workspace using remote-state outputs, TFE workspace outputs/variables or the deployment pipeline.
+
+### Q: Who creates the subscription?
+Typically a central cloud/platform team or a subscription-vending workflow. The AKS build normally consumes the subscription.
+
+### Q: Can Terraform create resource groups, VNet, subnet, NSG and routes?
+Yes. Those are normal AzureRM Terraform resources and can be created by a dedicated landing-zone Terraform workspace.
+
+### Q: Which resources should exist before AKS creation?
+At minimum, the target subscription and the networking/identity/DNS dependencies required by the chosen architecture must be available before the AKS resource is provisioned.
+
+### Q: Should the AKS subnet be created by the landing-zone or AKS workspace?
+Either design can work. What matters is having one clear owner. In the reviewed environment, the VNet appears pre-existing while the cluster subnet may be managed by the AKS code; this should be confirmed from the actual Terraform module.
+
+---
+
+# 22. Interview Answer — Existing Landing Zone vs Build from Scratch
+
+> In our current environment, the Azure landing zone is already available. The subscription, enterprise VNet, private DNS and managed identity are passed into the AKS Terraform Enterprise workspace as inputs, and the AKS code consumes those resources rather than recreating them.
+>
+> If I had to build the environment from scratch, I would separate it into two Terraform layers. A landing-zone workspace would establish the resource groups, VNet, AKS subnet, NSGs, routes, private DNS, managed identity, policies and RBAC. It would expose outputs such as the subnet ID, DNS zone ID and managed identity ID. The AKS TFE workspace would then consume those outputs and create the AKS cluster, system and user node pools and cluster-specific networking.
+>
+> The main reason for separating them is lifecycle isolation: I should be able to rebuild an AKS cluster without destroying the enterprise VNet, DNS or other shared landing-zone resources.
+
+---
+
+# 23. Updated End-to-End Mental Model
+
+```text
+CENTRAL CLOUD / LANDING ZONE
+          |
+          +-- Subscription
+          +-- Resource Groups
+          +-- VNet
+          +-- NSG / Routes
+          +-- Private DNS
+          +-- Managed Identity
+          |
+          v
+     TFE Outputs / Inputs
+          |
+          v
+      AKS WORKSPACE
+          |
+          +-- AKS Cluster
+          +-- System Pool
+          +-- User Pool
+          +-- BYOCNI / Cilium
+          |
+          v
+       POST-BUILD
+          |
+          +-- kube-proxy handling
+          +-- kubeconfig / RBAC
+          +-- Traefik
+          +-- Monitoring / Security
+          |
+          v
+     PRODUCTION-READY CLUSTER
+
+
+DNS:
+AKS API FQDN -> Private DNS -> Private AKS API Endpoint
+
+Apps:
+*.apps -> Private DNS -> Traefik ILB -> Traefik -> Service -> Pods
+```
