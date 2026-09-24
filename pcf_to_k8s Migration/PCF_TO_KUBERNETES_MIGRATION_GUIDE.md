@@ -111,6 +111,244 @@ Before migration begins, answer:
 
 ---
 
+
+# 2A. Target Placement and Cluster Strategy Decisions
+
+These questions should be answered **before application migration waves are finalized**.
+
+## Q. Should the workload run on-premises or in public cloud?
+
+Use a workload-by-workload decision, not a single blanket rule.
+
+| Decision Area | Favors On-Premises | Favors Public Cloud |
+|---|---|---|
+| Data residency / regulation | Strict local or internal hosting requirement | Cloud region/compliance model is acceptable |
+| Latency | Heavy dependency on low-latency on-prem systems | Users/dependencies are already cloud-based |
+| Legacy dependency | Mainframe, appliance, internal middleware tightly coupled on-prem | Dependencies can be reached reliably over private connectivity |
+| Elasticity | Stable/predictable demand | Bursty or rapidly changing demand |
+| Managed services | Organization must self-host | Need managed DB, Redis, messaging, observability, etc. |
+| Operations | Strong internal DC/platform capability already exists | Want to reduce infrastructure operations |
+| DR / multi-region | Existing second DC strategy | Cloud regions/AZs make DR easier to implement |
+| Cost model | Existing capacity is already paid for and well utilized | Consumption model and faster provisioning are beneficial |
+
+### Practical migration checkpoint
+
+Ask:
+
+```text
+Does the application have data-residency constraints?
+        |
+        +-- Yes --> Can the target cloud satisfy them?
+        |              |
+        |              +-- No --> On-prem/private K8s
+        |
+        +-- No
+             |
+             v
+Does it depend heavily on low-latency on-prem systems?
+        |
+        +-- Yes --> Prefer on-prem initially OR prove private-link latency
+        |
+        +-- No
+             |
+             v
+Evaluate cloud cost, managed services, DR, scalability and operating model
+```
+
+### Important migration pattern
+
+An application can first move:
+
+```text
+PCF on-prem
+    |
+    v
+Kubernetes on-prem
+```
+
+and later:
+
+```text
+Kubernetes on-prem
+    |
+    v
+EKS / AKS / OpenShift cloud
+```
+
+This can reduce risk because **platform migration and data-center/cloud migration are separated**.
+
+---
+
+## Q. Should the workload use a shared cluster or dedicated cluster?
+
+### Shared cluster
+
+```text
+Shared Kubernetes Cluster
+   |
+   +--> Namespace: Team-A
+   +--> Namespace: Team-B
+   +--> Namespace: Team-C
+```
+
+Use shared clusters when workloads have similar:
+
+- Security classification
+- Availability requirements
+- Network requirements
+- Upgrade cadence
+- Compliance requirements
+- Resource profile
+
+Benefits:
+
+- Better infrastructure utilization
+- Lower cost
+- Less cluster sprawl
+- Easier centralized operations
+
+Controls required:
+
+```text
+Namespaces
+RBAC
+NetworkPolicy
+ResourceQuota
+LimitRange
+Pod Security / admission policies
+Workload identity
+Separate secrets
+Observability boundaries
+```
+
+### Dedicated cluster
+
+```text
+Application / Business Unit
+          |
+     Dedicated Cluster
+```
+
+Consider a dedicated cluster when there is:
+
+- Strong regulatory or security isolation requirement
+- Very high criticality
+- Large resource consumption
+- Special networking requirements
+- Different Kubernetes/version/upgrade lifecycle
+- Noisy-neighbor concern
+- GPU/specialized nodes
+- Strict blast-radius requirement
+- Business-unit/platform ownership separation
+
+### Decision rule
+
+Do **not** create a dedicated cluster simply because an application team asks for one.
+
+Use:
+
+```text
+Can namespace-level controls provide enough isolation?
+        |
+        +-- Yes --> Shared cluster
+        |
+        +-- No --> Dedicated cluster
+```
+
+---
+
+## Q. One cluster per environment or multiple environments in one cluster?
+
+For enterprise production platforms, a common model is:
+
+```text
+Non-Prod Cluster(s)
+   +--> DEV
+   +--> QA
+
+Production Cluster(s)
+   +--> PROD
+```
+
+Avoid putting critical production and development workloads in the same failure domain unless there is a clear reason and strong isolation.
+
+For highly critical platforms:
+
+```text
+DEV Cluster
+TEST Cluster
+PROD Cluster
+DR / Secondary PROD Cluster
+```
+
+The exact number should depend on scale, security, operational overhead and blast radius.
+
+---
+
+## Q. Should all migrated PCF applications go to the same Kubernetes cluster?
+
+No.
+
+During discovery, applications should be grouped according to:
+
+```text
+Business criticality
+Security classification
+Data sensitivity
+Region / residency
+Network dependency
+Availability requirement
+Resource profile
+Business domain
+Failure isolation requirement
+```
+
+Example:
+
+```text
+PCF Estate
+   |
+   +--> Standard apps ---------> Shared K8s Cluster
+   |
+   +--> Payment workloads -----> Dedicated PCI/Secure Cluster
+   |
+   +--> Data-heavy workloads --> Separate data/platform cluster
+   |
+   +--> Low-latency legacy ----> On-prem K8s
+   |
+   +--> Cloud-native apps -----> EKS / AKS
+```
+
+---
+
+## Q. What other target-platform decisions must be answered?
+
+Before migration execution, explicitly decide:
+
+- On-premises vs public cloud vs hybrid
+- Region(s) and availability zones
+- Shared vs dedicated clusters
+- Production vs non-production separation
+- Single-region vs multi-region
+- Public vs private cluster/API endpoint
+- Ingress/load-balancing model
+- East-west network model
+- Internet egress model
+- Connectivity to on-prem databases and services
+- Identity/RBAC/workload identity
+- Secrets platform
+- Container registry
+- Logging/metrics/tracing platform
+- Backup and DR
+- Cluster and node upgrade ownership
+- Kubernetes version lifecycle
+- Node pool strategy
+- Autoscaling strategy
+- Tenant/resource quota model
+- Cost ownership / chargeback
+
+These decisions form part of the **future-state platform architecture**, not something to decide after applications are already being migrated.
+
 # 3. Phase 1 - PCF Discovery
 
 For every application collect:
