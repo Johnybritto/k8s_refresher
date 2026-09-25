@@ -16,6 +16,150 @@ The main mechanism is **redundancy**:
 
 The key objective is to remove single points of failure.
 
+
+## Types of High Availability
+
+HA can be implemented in different ways depending on where redundancy is introduced.
+
+### 1. Active-Passive HA
+
+One instance or site actively serves traffic while another remains on standby.
+
+```text
+Active Server  ---> serving traffic
+Passive Server ---> standby
+
+Failure
+   ↓
+Passive becomes Active
+```
+
+**Typical use cases**
+- Primary/standby databases
+- Some appliance or middleware clusters
+- RDS Multi-AZ style failover patterns
+
+**Advantages**
+- Simpler architecture
+- Lower cost than full active-active
+
+**Disadvantages**
+- Small failover delay may occur
+- Standby capacity may remain underutilized
+
+### 2. Active-Active HA
+
+Multiple healthy instances serve traffic at the same time.
+
+```text
+          Load Balancer
+          /          \
+      Server-A      Server-B
+       Active        Active
+```
+
+If one fails, the remaining instances continue serving traffic.
+
+**AWS examples**
+- ALB + EC2 across AZs
+- EKS replicas across AZs
+
+**Azure examples**
+- Application Gateway / Load Balancer + VMSS or AKS
+
+### 3. Multi-AZ HA
+
+Workloads are distributed across Availability Zones within the same region.
+
+```text
+Region
+ |
+ +-- AZ-A -> App
+ |
+ +-- AZ-B -> App
+ |
+ +-- AZ-C -> App
+```
+
+This protects mainly against:
+- instance failure
+- rack/data-center failure
+- AZ failure
+
+This is the most common cloud HA pattern.
+
+### 4. Multi-Region / Global HA
+
+The application is deployed in multiple regions.
+
+```text
+Global DNS / Traffic Manager
+          |
+     -------------
+     |           |
+ Region-A     Region-B
+```
+
+**AWS**
+- Route 53
+- Global Accelerator
+
+**Azure**
+- Front Door
+- Traffic Manager
+
+This provides stronger resilience but costs more and begins to overlap with DR and fault-tolerant designs.
+
+### 5. Application-Level HA
+
+The application itself runs multiple replicas.
+
+```text
+ALB
+ |
+ +-- App-1
+ +-- App-2
+ +-- App-3
+```
+
+For Kubernetes:
+
+```text
+Deployment replicas: 3
+Pod-1 -> AZ-A
+Pod-2 -> AZ-B
+Pod-3 -> AZ-C
+```
+
+### 6. Database HA
+
+The database uses primary/standby or replica-based redundancy.
+
+**AWS**
+- RDS Multi-AZ
+- Aurora replicas
+
+**Azure**
+- Azure SQL zone redundancy
+- Azure Database for PostgreSQL HA
+
+### 7. Network HA
+
+Network paths and devices are also redundant.
+
+Examples:
+- Load balancers across AZs
+- One NAT Gateway per AZ
+- Multiple VPN tunnels
+- Multiple Direct Connect / ExpressRoute paths
+- Redundant firewalls and routers
+
+**Interview answer**
+
+> “HA can be active-passive or active-active, and it can be implemented at the application, database, network, AZ, or region level. In cloud environments, Multi-AZ HA is the most common baseline.”
+
+---
+
 ## Core idea
 
 ```text
@@ -145,6 +289,88 @@ FT normally requires:
 - real-time or near-real-time replication
 - active-active components
 - automatic failure masking
+
+
+## Types / Patterns of Fault Tolerance
+
+The original source explains FT as extensive redundancy plus real-time replication so that failures are masked from users. The following are common implementation patterns used in practice.
+
+### 1. Active-Active Fault Tolerance
+
+Multiple systems are active and processing traffic simultaneously.
+
+```text
+             Traffic
+               |
+        ----------------
+        |              |
+     Active-A       Active-B
+```
+
+If one component fails, the others continue immediately.
+
+**Examples**
+- Multi-AZ application replicas
+- Multi-region active-active applications
+- DynamoDB Global Tables
+- Cosmos DB multi-region writes
+
+### 2. Synchronized Active-Standby
+
+A standby remains continuously synchronized with the active system and takes over immediately when failure is detected.
+
+```text
+Active
+  |
+  | continuous replication
+  v
+Standby
+```
+
+This approaches FT when the failover is seamless and data loss is effectively zero or near-zero.
+
+### 3. Component-Level Fault Tolerance
+
+Individual infrastructure components are redundant.
+
+Examples:
+- Redundant disks
+- Multiple NICs
+- Multiple power supplies
+- Multiple network paths
+- Redundant database nodes
+- Redundant Kubernetes nodes
+
+### 4. Multi-AZ Fault Tolerance
+
+Enough active capacity exists across AZs so the application continues even if an entire AZ fails.
+
+```text
+AZ-A  Active
+AZ-B  Active
+AZ-C  Active
+```
+
+### 5. Multi-Region Fault Tolerance
+
+Multiple regions actively serve users.
+
+```text
+Global Routing
+     |
+-------------------
+|                 |
+Region-A        Region-B
+Active          Active
+```
+
+This is expensive but provides protection beyond a single region.
+
+**Interview answer**
+
+> “Fault tolerance is commonly implemented using active-active systems, synchronized standby, component-level redundancy, Multi-AZ designs, or Multi-Region active-active designs. The key difference from HA is that FT tries to mask the failure so the user sees no interruption.”
+
+---
 
 ## HA vs FT
 
@@ -304,6 +530,89 @@ DR is mainly about:
 - business continuity
 - preserving data
 - restoring services within agreed recovery objectives
+
+---
+
+
+## Types of Disaster Recovery
+
+The standard cloud DR patterns are selected mainly based on **RTO, RPO, and cost**.
+
+### 1. Backup and Restore
+
+Backups are stored separately and infrastructure is rebuilt or restored after a disaster.
+
+```text
+Primary
+   |
+ Backup
+   |
+DR Storage
+```
+
+- Lowest cost
+- Highest RTO
+- Higher RPO compared with continuous replication
+
+### 2. Pilot Light
+
+Only the most critical core components remain running in the DR region.
+
+```text
+Primary Region        DR Region
+Full Stack            DB / Core only
+Running               Running
+```
+
+During disaster, the remaining application capacity is started or scaled.
+
+- Lower cost than warm standby
+- Medium RTO
+- Low-to-medium RPO
+
+### 3. Warm Standby
+
+A smaller but complete working environment always runs in the DR region.
+
+```text
+Primary Region        DR Region
+Full Capacity         Reduced Capacity
+Running               Running
+```
+
+During disaster, scale up the DR environment and redirect traffic.
+
+- Medium/high cost
+- Low RTO
+- Low RPO
+
+### 4. Multi-Site Active-Active
+
+Both regions actively serve production traffic.
+
+```text
+          Global Routing
+          /            \
+     Region-A        Region-B
+      Active          Active
+```
+
+- Highest cost
+- Lowest RTO
+- Lowest RPO
+
+### Quick memory
+
+```text
+Backup & Restore  -> cheapest, slowest
+Pilot Light       -> critical core only
+Warm Standby      -> smaller running environment
+Active-Active     -> both regions live
+```
+
+**Interview answer**
+
+> “The main DR patterns are Backup and Restore, Pilot Light, Warm Standby, and Multi-Site Active-Active. The choice is driven by the required RTO, RPO, business criticality, and cost.”
 
 ---
 
