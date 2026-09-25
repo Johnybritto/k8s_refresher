@@ -222,6 +222,66 @@ Important interview line:
 
 ---
 
+
+## Private Subnet to Public Subnet vs Internet Access
+
+A **private subnet does not need a NAT Gateway to communicate with a public subnet** inside the same VPC.
+
+Both subnets are covered by the VPC local route:
+
+```text
+10.0.0.0/16 -> local
+```
+
+Example:
+
+```text
+Public subnet:  10.0.1.0/24
+Private subnet: 10.0.11.0/24
+```
+
+Traffic flow:
+
+```text
+Private EC2
+10.0.11.10
+   |
+   v
+VPC local route
+   |
+   v
+Public EC2 / Internal-facing resource
+10.0.1.x
+```
+
+No NAT Gateway or Internet Gateway is required for this internal VPC communication.
+
+A NAT Gateway is only needed when a private subnet must reach the internet:
+
+```text
+Private EC2 / EKS
+   |
+   v
+0.0.0.0/0 -> NAT Gateway
+   |
+   v
+Internet Gateway
+   |
+   v
+Internet
+```
+
+### Interview memory line
+
+> Private -> Public subnet = VPC local route  
+> Private -> Internet = NAT Gateway
+
+Important:
+
+> A NAT Gateway does not enable private-to-public subnet communication. That communication already exists through the VPC local route, subject to Security Groups and NACLs.
+
+---
+
 ## 7. Security Groups
 
 Security Groups are stateful firewalls associated with ENIs/resources.
