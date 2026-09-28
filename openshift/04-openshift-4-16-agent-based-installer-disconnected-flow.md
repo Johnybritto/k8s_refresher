@@ -6,10 +6,30 @@
 >
 > **Not covered here:** Building the mirror registry, repository mirroring details, Squid/proxy simulation, or Operator lifecycle.
 
-Related notes:
+## Prerequisites — Read These First
 
-- `revision/openshift-disconnected-operator-upgrade-mirror-registry-runbook.md`
-- `revision/openshift-and-operator-repository-mirroring-flow.md`
+Before starting this Agent-Based Installer flow, complete the following disconnected-environment prerequisites:
+
+1. **Mirror registry setup**  
+   [14 - Disconnected Operator Upgrade Using Mirror Registry](./14-openshift-disconnected-operator-upgrade-mirror-registry-runbook.md)  
+   Use the mirror-registry setup, DNS, TLS/CA trust, registry authentication, and OpenShift pull-secret sections from this runbook.
+
+2. **Mirror OpenShift release and required Operator repositories**  
+   [13 - OpenShift and Operator Repository Mirroring Flow](./13-openshift-and-operator-repository-mirroring-flow.md)  
+   Complete this before installation so the required OpenShift 4.16 release content and any required Operator content are already available in the internal mirror registry.
+
+Recommended sequence:
+
+```text
+Mirror Registry Setup
+        |
+        v
+Mirror OpenShift + Operator Repositories
+        |
+        v
+THIS FILE
+Agent-Based OpenShift 4.16 Installation
+```
 
 ---
 
