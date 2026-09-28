@@ -56,6 +56,70 @@ OpenShift Cluster
 
 Inside OpenShift, configure the cluster to use the mirror rather than public registries.
 
+## DNS Requirement for the Mirror Registry
+
+For an enterprise/production setup, the mirror registry hostname should be registered in the organization's internal/corporate DNS.
+
+Example:
+
+```text
+mirror.example.com  ->  10.20.30.40
+```
+
+The important requirement is that every system that needs the registry can resolve the same hostname consistently, including:
+
+- OpenShift control-plane and worker nodes
+- The connected/disconnected mirroring or bastion host
+- Administrative hosts that run `oc-mirror`, `podman`, or registry validation commands
+
+Preferred design:
+
+```text
+OpenShift Nodes
+      |
+      v
+Corporate / Internal DNS
+      |
+      v
+mirror.example.com
+      |
+      v
+Mirror Registry Server
+```
+
+### Production vs Lab
+
+| Setup | Recommendation |
+|---|---|
+| Production / Enterprise | Create the record in corporate/internal DNS |
+| Lab with an internal DNS server | Fine, provided all OpenShift nodes and mirror hosts use that DNS server |
+| `/etc/hosts` only | Suitable only for temporary testing/lab use; avoid for production |
+
+Using only `/etc/hosts` means the entry must be maintained consistently on every machine that needs to reach the registry.
+
+### DNS Name and TLS Must Match
+
+The registry TLS certificate must contain the registry hostname in its Subject Alternative Name (SAN), for example:
+
+```text
+DNS:mirror.example.com
+```
+
+So the complete dependency is:
+
+```text
+DNS resolves mirror.example.com
+          +
+TLS certificate is valid for mirror.example.com
+          +
+OpenShift trusts the registry CA
+          +
+Cluster has registry credentials
+          |
+          v
+Reliable image pulls from the mirror registry
+```
+
 ### ImageDigestMirrorSet (IDMS)
 
 For digest-based image mirroring, OpenShift uses `ImageDigestMirrorSet`.
