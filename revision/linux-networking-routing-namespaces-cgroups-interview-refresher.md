@@ -1084,3 +1084,1202 @@ For senior Platform/Kubernetes interviews, be strongest in:
 8. How Kubernetes CPU/memory limits map to cgroups.
 9. Container OOM versus host OOM.
 10. How CNI builds Pod networking from Linux primitives.
+
+
+---
+
+## 42. systemd for Kubernetes and Container Runtimes
+
+systemd is the service manager on most enterprise Linux distributions used for Kubernetes nodes.
+
+Typical Kubernetes services:
+
+```text
+kubelet.service
+containerd.service
+crio.service
+sshd.service
+chronyd.service
+```
+
+Useful commands:
+
+```bash
+systemctl status kubelet
+systemctl status containerd
+systemctl status crio
+
+systemctl restart kubelet
+systemctl restart containerd
+
+systemctl enable kubelet
+systemctl enable containerd
+
+journalctl -u kubelet
+journalctl -u containerd
+journalctl -u crio
+
+journalctl -u kubelet -f
+```
+
+If a service unit is changed:
+
+```bash
+systemctl daemon-reload
+systemctl restart <service>
+```
+
+Strong interview point:
+
+> Kubernetes control-plane and worker services ultimately depend on Linux service management. If kubelet or the container runtime is down, the node cannot manage Pods correctly.
+
+---
+
+## 43. Container Runtime Architecture
+
+Modern Kubernetes uses the Container Runtime Interface (CRI) to communicate with a container runtime.
+
+```text
+Kubernetes
+   |
+ kubelet
+   |
+   | CRI / gRPC
+   v
+containerd / CRI-O
+   |
+   v
+OCI runtime
+runc / crun
+   |
+   v
+Linux kernel
+namespaces + cgroups + filesystem
+```
+
+The kubelet does not directly execute containers.
+
+It asks the CRI-compatible runtime to create Pod sandboxes, pull images, start containers, and stop containers.
+
+---
+
+## 44. CRI vs OCI
+
+This distinction is worth memorizing.
+
+### CRI
+
+CRI is the Kubernetes interface between:
+
+```text
+kubelet
+   |
+   v
+container runtime
+```
+
+Examples of CRI-compatible runtimes:
+
+- containerd
+- CRI-O
+
+### OCI
+
+OCI defines standards around:
+
+- container images
+- container runtime specification
+
+A low-level OCI runtime such as `runc` or `crun` actually creates the Linux container process.
+
+Mental model:
+
+```text
+Kubernetes
+   |
+   | CRI
+   v
+containerd / CRI-O
+   |
+   | OCI
+   v
+runc / crun
+   |
+   v
+Linux process
+```
+
+Interview answer:
+
+> CRI is the interface Kubernetes uses to talk to the container runtime, while OCI defines common image and runtime standards used by the container ecosystem underneath.
+
+---
+
+## 45. containerd
+
+containerd is a widely used Kubernetes container runtime.
+
+Typical socket:
+
+```text
+/run/containerd/containerd.sock
+```
+
+Typical configuration:
+
+```text
+/etc/containerd/config.toml
+```
+
+Useful commands:
+
+```bash
+systemctl status containerd
+journalctl -u containerd
+crictl info
+crictl ps -a
+crictl pods
+crictl images
+```
+
+A common kubelet runtime endpoint is conceptually:
+
+```text
+unix:///run/containerd/containerd.sock
+```
+
+### systemd cgroup driver
+
+On modern systemd-based Kubernetes nodes, containerd commonly uses the systemd cgroup driver.
+
+A common configuration concept is:
+
+```text
+SystemdCgroup = true
+```
+
+Why this matters:
+
+```text
+systemd manages host services
+        +
+kubelet/runtime use systemd cgroups
+        |
+        v
+consistent cgroup hierarchy
+```
+
+A cgroup-driver mismatch can create node instability.
+
+---
+
+## 46. CRI-O
+
+CRI-O is a lightweight container runtime built specifically around the Kubernetes CRI.
+
+It is commonly associated with OpenShift.
+
+Architecture:
+
+```text
+kubelet
+   |
+   | CRI
+   v
+CRI-O
+   |
+   v
+runc / crun
+   |
+   v
+Linux kernel
+```
+
+Typical service:
+
+```bash
+systemctl status crio
+journalctl -u crio
+```
+
+You can still use `crictl` because it talks to the CRI endpoint.
+
+Strong interview answer:
+
+> containerd is a general-purpose container runtime widely used by Kubernetes distributions, while CRI-O is purpose-built for Kubernetes CRI and is used heavily in OpenShift.
+
+---
+
+## 47. crictl
+
+`crictl` is one of the most useful tools for node-level Kubernetes runtime troubleshooting.
+
+Useful commands:
+
+```bash
+crictl info
+crictl pods
+crictl ps
+crictl ps -a
+crictl images
+crictl inspect <container-id>
+crictl logs <container-id>
+crictl inspectp <pod-id>
+```
+
+Troubleshooting flow:
+
+```text
+Pod failing
+   |
+kubectl describe
+   |
+node/runtime suspected
+   |
+ssh to node
+   |
+crictl pods / ps -a
+   |
+crictl inspect / logs
+   |
+journalctl runtime + kubelet
+```
+
+---
+
+## 48. ctr vs crictl
+
+With containerd you may also see `ctr`.
+
+Important distinction:
+
+```text
+crictl
+  |
+  -> Kubernetes CRI troubleshooting
+
+ctr
+  |
+  -> low-level containerd client
+```
+
+For Kubernetes troubleshooting, prefer `crictl` first because it reflects the CRI objects kubelet works with.
+
+---
+
+## 49. Pod Sandbox Concept
+
+Before Kubernetes starts application containers in a Pod, the runtime creates a Pod sandbox.
+
+The sandbox provides the shared Pod-level environment, especially networking.
+
+```text
+Pod
+ |
+ +-- sandbox
+ |     |
+ |     +-- network namespace
+ |
+ +-- app container
+ |
+ +-- sidecar container
+```
+
+Containers in the same Pod share the Pod's network namespace.
+
+If sandbox creation fails, Pods may remain in:
+
+```text
+ContainerCreating
+CreatePodSandboxError
+```
+
+Likely areas:
+
+- CNI
+- runtime
+- network namespace creation
+- registry/image pull
+- runtime socket
+- node filesystem
+
+---
+
+## 50. Container Runtime Troubleshooting
+
+Common failure:
+
+```text
+container runtime is down
+```
+
+Check:
+
+```bash
+systemctl status containerd
+journalctl -u containerd
+crictl info
+```
+
+Common symptoms:
+
+- Node NotReady
+- kubelet reports runtime unavailable
+- Pods do not start
+- Pod sandbox creation fails
+
+### Runtime socket issue
+
+Check runtime endpoint and socket:
+
+```bash
+ls -l /run/containerd/containerd.sock
+crictl info
+```
+
+### Image pull failure
+
+Check:
+
+```bash
+crictl pull <image>
+crictl images
+journalctl -u containerd
+```
+
+Investigate:
+
+- DNS
+- proxy
+- private registry auth
+- CA trust
+- image name/tag
+- firewall
+
+### Disk full
+
+Check:
+
+```bash
+df -h
+df -i
+du -sh /var/lib/containerd/*
+```
+
+A node can fail even when CPU/memory are healthy if runtime storage is exhausted.
+
+---
+
+## 51. Linux Filesystem Fundamentals
+
+Useful commands:
+
+```bash
+df -h
+df -i
+du -sh /var/*
+lsblk
+blkid
+mount
+findmnt
+cat /etc/fstab
+```
+
+### df -h vs df -i
+
+```text
+df -h
+  -> disk block usage
+
+df -i
+  -> inode usage
+```
+
+A filesystem can have free GB but still fail to create files if inodes are exhausted.
+
+---
+
+## 52. Mounts and /etc/fstab
+
+List mounts:
+
+```bash
+mount
+findmnt
+```
+
+Persistent mounts are normally defined in:
+
+```text
+/etc/fstab
+```
+
+Typical failure scenario:
+
+```text
+server reboot
+   |
+filesystem fails to mount
+   |
+container runtime data path missing
+   |
+kubelet/runtime fail
+```
+
+Always check underlying mounts when a node behaves differently after reboot.
+
+---
+
+## 53. XFS and ext4
+
+Common Linux filesystems include:
+
+```text
+XFS
+ext4
+```
+
+For Kubernetes/platform interviews, know at a high level:
+
+- mount options matter
+- filesystem full conditions affect kubelet/runtime
+- inode exhaustion matters
+- storage performance affects container startup and stateful workloads
+- XFS/ext4 are common host filesystems
+
+You do not normally need deep filesystem internals unless the role is Linux-specialist-heavy.
+
+---
+
+## 54. OverlayFS and Container Filesystems
+
+Containers often use layered filesystems.
+
+Conceptually:
+
+```text
+Image layer 1
+Image layer 2
+Image layer 3
+     |
+     +---- read-only layers
+     |
+Writable container layer
+     |
+     v
+Container filesystem view
+```
+
+OverlayFS is commonly used underneath container runtimes.
+
+Important consequence:
+
+```text
+container writable layer
+!= persistent application storage
+```
+
+If the container is recreated, writable-layer data may disappear.
+
+Persistent data should use Kubernetes volumes.
+
+---
+
+## 55. Linux Kernel Basics for Kubernetes
+
+Kubernetes relies heavily on Linux kernel features.
+
+Important areas:
+
+- namespaces
+- cgroups
+- routing
+- netfilter
+- conntrack
+- overlay networking
+- filesystems
+- capabilities
+- seccomp
+- SELinux/AppArmor
+- kernel modules
+
+Useful commands:
+
+```bash
+uname -r
+lsmod
+modprobe
+sysctl -a
+dmesg
+journalctl -k
+```
+
+---
+
+## 56. Important Kernel Modules
+
+Common modules relevant to Kubernetes/container networking include:
+
+```text
+overlay
+br_netfilter
+```
+
+Load:
+
+```bash
+modprobe overlay
+modprobe br_netfilter
+```
+
+Check:
+
+```bash
+lsmod | grep overlay
+lsmod | grep br_netfilter
+```
+
+Exact requirements depend on Kubernetes version and CNI.
+
+---
+
+## 57. Important sysctl Concepts
+
+Useful checks:
+
+```bash
+sysctl net.ipv4.ip_forward
+sysctl net.bridge.bridge-nf-call-iptables
+```
+
+IP forwarding is important when the node must route traffic between interfaces/namespaces.
+
+Conceptually:
+
+```text
+Pod network
+   |
+Linux node
+   |
+another network
+```
+
+The kernel may need forwarding enabled.
+
+Persistent sysctl configuration is commonly kept under:
+
+```text
+/etc/sysctl.conf
+/etc/sysctl.d/
+```
+
+Apply:
+
+```bash
+sysctl --system
+```
+
+---
+
+## 58. conntrack
+
+Linux connection tracking maintains state for network flows.
+
+Kubernetes Service/NAT implementations may rely on conntrack.
+
+Useful command:
+
+```bash
+conntrack -L
+```
+
+Common issue:
+
+```text
+conntrack table full
+        |
+new connections fail/drop
+        |
+random-looking network failures
+```
+
+Check kernel logs and conntrack metrics/settings if the node experiences large-scale connection failures.
+
+---
+
+## 59. File Descriptor Limits
+
+A process or node can fail because it runs out of file descriptors.
+
+Useful commands:
+
+```bash
+ulimit -n
+cat /proc/sys/fs/file-max
+ls /proc/<PID>/fd | wc -l
+```
+
+Symptoms can include:
+
+- cannot open files
+- socket creation failures
+- API/application instability
+
+For high-scale Kubernetes nodes, OS-level limits matter.
+
+---
+
+## 60. Process and Memory Troubleshooting
+
+Useful commands:
+
+```bash
+ps -ef
+top
+free -m
+vmstat
+pidstat
+dmesg
+journalctl -k
+```
+
+Typical reasoning:
+
+```text
+high load
+  |
+CPU?
+Memory?
+I/O?
+blocked processes?
+container cgroup?
+host issue?
+```
+
+Do not assume every high load average means CPU saturation.
+
+---
+
+## 61. Linux I/O Troubleshooting
+
+Useful commands:
+
+```bash
+iostat
+iotop
+vmstat
+lsblk
+df -h
+```
+
+Symptoms:
+
+- slow image pulls
+- slow container startup
+- kubelet timeouts
+- etcd latency
+- stateful workload latency
+
+For etcd especially, disk latency is critical.
+
+---
+
+## 62. OS Hardening for Kubernetes Nodes
+
+For production/on-prem clusters, think in layers.
+
+### Minimal OS footprint
+
+- install only required packages
+- disable unnecessary services
+- remove unused software
+
+### SSH hardening
+
+- restrict root login
+- use key-based authentication
+- limit administrative access
+- enforce MFA/jump-host controls where available
+
+### Firewall
+
+- open only required Kubernetes/runtime/CNI ports
+- restrict management access
+- avoid broad any/any rules
+
+### Patch management
+
+- regularly patch OS/kernel
+- test compatibility before rollout
+- use rolling node maintenance
+
+### File permissions
+
+Protect sensitive paths such as:
+
+```text
+/etc/kubernetes/
+/var/lib/kubelet/
+/etc/containerd/
+/etc/crio/
+/etc/ssl/
+```
+
+### Time synchronization
+
+Use chrony/NTP.
+
+Time drift can cause:
+
+- certificate validation issues
+- authentication problems
+- etcd issues
+- confusing logs
+
+---
+
+## 63. SELinux and AppArmor
+
+Linux Mandatory Access Control adds another security layer beyond Unix permissions.
+
+### SELinux
+
+Common in RHEL/OpenShift environments.
+
+Modes:
+
+```text
+Enforcing
+Permissive
+Disabled
+```
+
+Useful:
+
+```bash
+getenforce
+sestatus
+ausearch -m avc
+```
+
+Strong interview position:
+
+> Do not disable SELinux as a first troubleshooting step in production. Identify the denial and fix the policy/configuration.
+
+### AppArmor
+
+Common on some Ubuntu-based environments.
+
+It restricts process behavior through profiles.
+
+---
+
+## 64. auditd
+
+Linux audit can capture security-relevant host activity.
+
+Useful commands:
+
+```bash
+systemctl status auditd
+ausearch
+aureport
+```
+
+Audit evidence can be important in regulated environments.
+
+Kubernetes audit logging is separate from Linux auditd; both may be used.
+
+---
+
+## 65. CIS Benchmarks
+
+CIS provides security benchmark recommendations for:
+
+- Linux OS
+- Kubernetes
+- container runtimes
+- Kubernetes distributions
+
+Typical areas:
+
+- file permissions
+- authentication
+- API server settings
+- kubelet settings
+- audit policy
+- encryption
+- host hardening
+
+Kubernetes-focused tool:
+
+```text
+kube-bench
+```
+
+Concept:
+
+```text
+CIS benchmark
+    |
+automated/manual check
+    |
+finding
+    |
+risk review
+    |
+remediation or documented exception
+```
+
+Do not blindly apply every recommendation without testing because some controls can conflict with platform requirements.
+
+---
+
+## 66. cgroup v1 vs cgroup v2
+
+Modern Linux increasingly uses cgroup v2.
+
+### cgroup v1
+
+Historically, different controllers could have separate hierarchies.
+
+### cgroup v2
+
+Provides a unified hierarchy and improved resource-control model.
+
+Conceptually:
+
+```text
+cgroup v2
+   |
+unified hierarchy
+   |
+system.slice
+user.slice
+kubepods.slice
+```
+
+Useful command:
+
+```bash
+stat -fc %T /sys/fs/cgroup/
+```
+
+On cgroup v2 systems you typically see:
+
+```text
+cgroup2fs
+```
+
+---
+
+## 67. kubelet and Runtime cgroup Driver
+
+The kubelet and container runtime should use compatible cgroup drivers.
+
+Preferred modern model on systemd systems:
+
+```text
+systemd
+  |
+  +-- kubelet
+  |
+  +-- containerd / CRI-O
+  |
+  +-- Kubernetes Pod/container cgroups
+```
+
+A mismatch can lead to:
+
+- resource accounting inconsistencies
+- kubelet instability
+- node issues
+
+Interview line:
+
+> On modern systemd-based Kubernetes nodes I would align kubelet and the runtime on the systemd cgroup driver and validate cgroup v2 compatibility.
+
+---
+
+## 68. Kernel / Runtime / Kubernetes Compatibility
+
+Think of compatibility as a stack:
+
+```text
+Linux kernel
+    |
+cgroups / namespaces / modules
+    |
+containerd or CRI-O
+    |
+CRI
+    |
+kubelet
+    |
+Kubernetes version
+```
+
+Before upgrades, validate:
+
+- supported Linux distribution/kernel
+- cgroup version
+- runtime version support
+- kubelet/Kubernetes version skew
+- CNI compatibility
+- CSI compatibility
+- GPU driver compatibility where relevant
+
+Do not upgrade one layer blindly without checking the others.
+
+---
+
+## 69. Common Runtime/Node Interview Scenarios
+
+### kubelet is running but node is NotReady
+
+Check:
+
+```text
+kubelet logs
+runtime health
+CNI health
+disk pressure
+memory pressure
+PID pressure
+network
+```
+
+Commands:
+
+```bash
+systemctl status kubelet
+journalctl -u kubelet
+crictl info
+kubectl describe node <node>
+```
+
+### Runtime is down
+
+```bash
+systemctl status containerd
+journalctl -u containerd
+```
+
+Expected impact:
+
+```text
+existing containers may temporarily continue
+but kubelet cannot reliably create/manage new containers
+node becomes unhealthy/NotReady
+```
+
+### Node disk pressure
+
+```bash
+df -h
+df -i
+du -sh /var/lib/containerd/*
+du -sh /var/lib/kubelet/*
+```
+
+Possible outcome:
+
+- DiskPressure
+- image garbage collection
+- Pod evictions
+- runtime failures
+
+### Image pull works with podman but not Kubernetes
+
+Check:
+
+- runtime registry configuration
+- runtime CA trust
+- imagePullSecrets
+- ServiceAccount
+- runtime proxy config
+- DNS on node
+- `crictl pull`
+
+---
+
+## 70. Senior-Level Linux + Runtime Troubleshooting Flow
+
+```text
+1. Is node reachable?
+       |
+2. OS healthy?
+       |
+3. CPU/memory/disk/inodes?
+       |
+4. kubelet healthy?
+       |
+5. container runtime healthy?
+       |
+6. CRI responding?
+       |
+7. CNI healthy?
+       |
+8. DNS/network routes?
+       |
+9. registry/image access?
+       |
+10. cgroup/kernel/security issue?
+```
+
+Useful commands:
+
+```bash
+uptime
+free -m
+df -h
+df -i
+systemctl status kubelet
+systemctl status containerd
+journalctl -u kubelet
+journalctl -u containerd
+crictl info
+crictl ps -a
+ip addr
+ip route
+dmesg
+journalctl -k
+```
+
+---
+
+## 71. Must-Know Linux and Runtime Commands
+
+### Services
+
+```bash
+systemctl status kubelet
+systemctl status containerd
+systemctl status crio
+journalctl -u kubelet
+journalctl -u containerd
+```
+
+### Runtime
+
+```bash
+crictl info
+crictl pods
+crictl ps -a
+crictl images
+crictl inspect
+crictl logs
+```
+
+### Filesystem
+
+```bash
+df -h
+df -i
+du -sh
+lsblk
+findmnt
+mount
+```
+
+### Kernel
+
+```bash
+uname -r
+lsmod
+modprobe
+sysctl
+dmesg
+journalctl -k
+```
+
+### Process/resource
+
+```bash
+ps -ef
+top
+free -m
+vmstat
+iostat
+pidstat
+```
+
+---
+
+## 72. Container Runtime Interview Answers Worth Memorizing
+
+### What is CRI?
+
+CRI is the gRPC interface between kubelet and a container runtime such as containerd or CRI-O.
+
+### What is OCI?
+
+OCI defines standard container image and runtime specifications. Low-level runtimes such as runc implement the runtime specification.
+
+### containerd vs CRI-O?
+
+Both can satisfy the Kubernetes CRI requirement. containerd is a broader industry container runtime, while CRI-O is designed specifically for Kubernetes and is widely used in OpenShift.
+
+### What happens if containerd goes down?
+
+The kubelet loses communication with the runtime. Existing containers may continue running for some time, but the node cannot reliably create, delete, restart, or inspect containers, and the node can transition to an unhealthy/NotReady state.
+
+### Why use crictl?
+
+Because crictl talks directly to the CRI endpoint and is the preferred node-level troubleshooting tool for Kubernetes Pods/containers independent of whether the runtime is containerd or CRI-O.
+
+### Why does cgroup driver matter?
+
+The kubelet and runtime both manage resource hierarchy. On systemd-based nodes, aligning them on the systemd cgroup driver gives consistent resource management and avoids instability.
+
+---
+
+## 73. Updated Final Mental Model
+
+```text
+                    Kubernetes Pod
+                         |
+                kubelet on Linux node
+                         |
+                       CRI
+                         |
+             +-----------+-----------+
+             |                       |
+         containerd                 CRI-O
+             |                       |
+             +-----------+-----------+
+                         |
+                    runc / crun
+                         |
+                    Linux kernel
+                         |
+       +-----------------+------------------+
+       |                 |                  |
+   namespaces          cgroups          filesystem
+       |                 |                  |
+ isolation/view     resource control      OverlayFS
+       |
+network namespace
+       |
+veth / CNI
+       |
+routing / eBPF / iptables
+       |
+node NIC
+```
+
+For Point 3 — **Linux and Container Runtime** — be strongest in:
+
+1. Linux networking and routing.
+2. Namespaces and cgroups.
+3. containerd / CRI-O architecture.
+4. CRI vs OCI.
+5. kubelet-to-runtime interaction.
+6. crictl troubleshooting.
+7. systemd and journalctl.
+8. disk/inode/filesystem troubleshooting.
+9. kernel modules and sysctl.
+10. cgroup v2 and systemd cgroup driver.
+11. OS hardening / SELinux / CIS.
+12. kernel-runtime-Kubernetes compatibility.
+
