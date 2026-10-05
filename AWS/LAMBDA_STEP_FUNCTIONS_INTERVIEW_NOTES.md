@@ -422,6 +422,488 @@ Lambda automatically increases concurrent executions as event/request volume inc
 
 ---
 
+
+## 8A. How EC2 or an Application Connects to Lambda
+
+An EC2 instance or application does **not connect directly to a Lambda runtime using a server IP**.
+
+It normally invokes Lambda through an AWS service/API.
+
+### Option 1 — Direct Lambda Invocation
+
+An EC2-hosted application can invoke Lambda through the AWS SDK / Lambda Invoke API.
+
+```text
+EC2 / Application
+      |
+      | AWS SDK / HTTPS
+      v
+Lambda Invoke API
+      |
+      v
+Lambda Function
+```
+
+The EC2 instance uses an IAM instance role with:
+
+```text
+lambda:InvokeFunction
+```
+
+This is useful for internal service-to-service invocation.
+
+---
+
+### Option 2 — API Gateway
+
+For an HTTP/REST API:
+
+```text
+Application / Client
+      |
+      | HTTPS
+      v
+API Gateway
+      |
+      v
+Lambda
+```
+
+API Gateway can provide:
+
+- Authentication / authorization
+- Throttling
+- Rate limiting
+- Request validation
+- API routing
+
+Use this when Lambda is the backend of an application API.
+
+---
+
+### Option 3 — Asynchronous Invocation through SQS / SNS / EventBridge
+
+For decoupled processing:
+
+```text
+Application
+    |
+    v
+   SQS
+    |
+    v
+ Lambda
+```
+
+or:
+
+```text
+Application
+    |
+EventBridge
+    |
+    v
+ Lambda
+```
+
+This is useful when the application should not wait for the Lambda execution to complete.
+
+---
+
+### Option 4 — Private EC2 to Lambda through a VPC Endpoint
+
+If EC2 is in a private subnet and you do not want the Lambda API call to use a NAT Gateway:
+
+```text
+Private EC2
+     |
+     v
+Lambda Interface VPC Endpoint
+Private IP / ENI
+     |
+ AWS PrivateLink
+     |
+     v
+Lambda Service
+     |
+     v
+Lambda Function
+```
+
+Without the endpoint:
+
+```text
+Private EC2
+     |
+NAT Gateway
+     |
+Lambda Public Service Endpoint
+     |
+Lambda
+```
+
+With an Interface VPC Endpoint:
+
+```text
+Private EC2
+     |
+vpce-Lambda
+     |
+PrivateLink
+     |
+Lambda Service
+```
+
+No NAT or Internet Gateway is required for the Lambda API call.
+
+---
+
+## 8B. Important VPC Direction Distinction
+
+A common interview trap is:
+
+> “Do I put Lambda inside my VPC so EC2 can invoke it?”
+
+No.
+
+For EC2 to invoke Lambda:
+
+```text
+EC2 -> Lambda
+= Lambda Invoke API / API Gateway / Event Service
+```
+
+Lambda VPC configuration is mainly for the opposite direction:
+
+```text
+Lambda -> Private RDS / Redis / EC2 / Internal Service
+= Lambda configured for VPC access
+```
+
+Example:
+
+```text
+Lambda
+  |
+VPC networking
+  |
+Private Subnet Resources
+  |
+RDS / ElastiCache / Internal Service
+```
+
+So remember:
+
+```text
+EC2 -> Lambda
+does NOT require Lambda to be VPC-enabled
+
+Lambda -> Private VPC Resource
+does require appropriate Lambda VPC configuration
+```
+
+---
+
+## 8C. IAM Roles Involved in Lambda Invocation
+
+There are three different IAM concepts to distinguish.
+
+### 1. Caller IAM Role
+
+For direct EC2-to-Lambda invocation:
+
+```text
+EC2
+ |
+IAM Instance Role
+ |
+lambda:InvokeFunction
+ |
+ v
+Lambda
+```
+
+Example permission:
+
+```json
+{
+  "Effect": "Allow",
+  "Action": "lambda:InvokeFunction",
+  "Resource": "arn:aws:lambda:ap-south-1:123456789012:function:process-order"
+}
+```
+
+The EC2 role trust policy allows EC2 to assume the role:
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": {
+    "Service": "ec2.amazonaws.com"
+  },
+  "Action": "sts:AssumeRole"
+}
+```
+
+Easy memory:
+
+> Caller role = Who can invoke the Lambda?
+
+---
+
+### 2. Lambda Execution Role
+
+Once the function starts, Lambda assumes its own execution role.
+
+```text
+Lambda Function
+      |
+Lambda Execution Role
+      |
+      +--> CloudWatch Logs
+      +--> S3
+      +--> DynamoDB
+      +--> Secrets Manager
+      +--> Other AWS APIs
+```
+
+Trust policy:
+
+```json
+{
+  "Effect": "Allow",
+  "Principal": {
+    "Service": "lambda.amazonaws.com"
+  },
+  "Action": "sts:AssumeRole"
+}
+```
+
+Easy memory:
+
+> Lambda execution role = What can the Lambda do after it runs?
+
+---
+
+### 3. Lambda Resource-Based Policy
+
+Used when another AWS service or another AWS account invokes the function.
+
+Example with API Gateway:
+
+```text
+API Gateway
+     |
+Lambda Resource Policy
+     |
+     v
+Lambda
+```
+
+Conceptually the policy allows:
+
+```text
+Principal: apigateway.amazonaws.com
+Action: lambda:InvokeFunction
+```
+
+Easy memory:
+
+> Lambda resource policy = Which AWS service/account is allowed to invoke this function?
+
+---
+
+## 8D. IAM by Invocation Pattern
+
+### Direct EC2 -> Lambda
+
+```text
+EC2
+ |
+EC2 IAM Role
+lambda:InvokeFunction
+ |
+ v
+Lambda
+ |
+Lambda Execution Role
+ |
+AWS Services
+```
+
+Required:
+
+- EC2 role with `lambda:InvokeFunction`
+- Lambda execution role for whatever the function itself needs to access
+
+---
+
+### EC2 -> API Gateway -> Lambda
+
+```text
+EC2 / Client
+     |
+     v
+API Gateway
+     |
+Lambda Resource Policy
+     |
+     v
+Lambda
+     |
+Lambda Execution Role
+```
+
+Potential controls:
+
+- Client/API authentication
+- API Gateway authorization
+- Lambda resource-based permission allowing API Gateway
+- Lambda execution role
+
+---
+
+### EC2 -> SQS -> Lambda
+
+```text
+EC2
+ |
+EC2 IAM Role
+sqs:SendMessage
+ |
+ v
+SQS
+ |
+ v
+Lambda
+```
+
+EC2 role needs:
+
+```text
+sqs:SendMessage
+```
+
+Lambda execution role typically needs permissions required for the SQS event-source integration, such as:
+
+```text
+sqs:ReceiveMessage
+sqs:DeleteMessage
+sqs:GetQueueAttributes
+```
+
+---
+
+### Application -> EventBridge -> Lambda
+
+```text
+Application
+ |
+IAM Role
+events:PutEvents
+ |
+ v
+EventBridge
+ |
+Lambda Resource Policy
+ |
+ v
+Lambda
+```
+
+The application role publishes the event.
+
+Lambda's resource-based policy allows EventBridge to invoke the function.
+
+---
+
+### EC2 -> Lambda through Interface VPC Endpoint
+
+```text
+EC2
+ |
+EC2 IAM Role
+lambda:InvokeFunction
+ |
+Lambda Interface Endpoint
+ |
+PrivateLink
+ |
+Lambda
+```
+
+The IAM role requirement does not fundamentally change.
+
+You may additionally apply a **VPC Endpoint Policy** to restrict which Lambda functions can be accessed through that endpoint.
+
+Conceptually:
+
+```text
+EC2 IAM Role
+      +
+VPC Endpoint Policy
+      +
+Lambda Permissions
+```
+
+---
+
+## 8E. Interview Q&A — Lambda Connectivity and IAM
+
+### Q11. How can an EC2 instance invoke Lambda?
+
+It can invoke Lambda directly using the AWS SDK / Lambda Invoke API. The EC2 instance profile role needs `lambda:InvokeFunction` permission on the target Lambda.
+
+### Q12. Does Lambda need to be inside the VPC for EC2 to invoke it?
+
+No. EC2 invokes the Lambda service API. Lambda VPC configuration is mainly required when the Lambda function itself needs to access private VPC resources such as RDS, Redis, or internal services.
+
+### Q13. How can a private EC2 invoke Lambda without NAT?
+
+Create an Interface VPC Endpoint for the Lambda service. The EC2 instance then accesses the Lambda service privately through AWS PrivateLink.
+
+### Q14. What IAM role does EC2 need?
+
+The EC2 instance profile role needs permission such as:
+
+```text
+lambda:InvokeFunction
+```
+
+for the specific target Lambda ARN.
+
+### Q15. What is the Lambda execution role?
+
+It is the role assumed by the Lambda service while executing the function. It controls what the function can access after invocation, such as S3, DynamoDB, Secrets Manager, or CloudWatch.
+
+### Q16. What is a Lambda resource-based policy?
+
+It defines which AWS services, accounts, or principals are allowed to invoke the Lambda. For example, API Gateway or EventBridge is commonly granted invoke permission through the Lambda resource policy.
+
+### Q17. Caller role vs Lambda execution role?
+
+```text
+Caller Role
+= Who can invoke Lambda?
+
+Lambda Execution Role
+= What can Lambda do after invocation?
+
+Lambda Resource Policy
+= Which service/account can invoke the function?
+```
+
+### Q18. When would you use API Gateway instead of direct Lambda invocation?
+
+Use API Gateway when the Lambda is exposed as an HTTP/API backend and you need authentication, throttling, routing, request validation, or API management.
+
+### Q19. When would you use SQS instead of direct invocation?
+
+Use SQS for asynchronous, decoupled processing when the caller does not need to wait for Lambda to finish and you want buffering/retry behavior.
+
+---
+
+
 # 9. AWS Step Functions
 
 ## What is AWS Step Functions?
