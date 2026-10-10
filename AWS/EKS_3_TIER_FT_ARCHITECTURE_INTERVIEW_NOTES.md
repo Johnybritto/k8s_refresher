@@ -925,3 +925,195 @@ Components:
 # 22. Interview-Ready Summary
 
 > “I would create a /16 VPC and split it into public, private application, and database subnets across three Availability Zones. The internet-facing ALB and one NAT Gateway per AZ are associated with the public tier. EKS worker nodes, pods, and EKS-managed cluster ENIs are in private subnets. RDS or Aurora uses dedicated DB subnets. Normal application traffic enters through Route 53, CloudFront and WAF, then the ALB, ingress, service and pod. Business API traffic is kept separate and goes through API Gateway or Apigee, then private connectivity/VPC Link to an internal load balancer and EKS API service. Kubernetes control-plane traffic uses the AWS-managed EKS API endpoint directly and does not go through API Gateway. Applications access S3 privately through an S3 Gateway Endpoint and access the database over VPC-local routing. NAT is only required for outbound internet access from private workloads.”
+
+---
+
+# 23. How a Corporate User Reaches Route 53 / EKS Application
+
+For the Section 16 architecture, `*.apps.example.com` and `api.apps.example.com` are assumed to be public DNS names in a Route 53 Public Hosted Zone.
+
+A corporate user does **not connect to Route 53 as an application endpoint**.
+
+Route 53 is only used for DNS resolution.
+
+## A. DNS Resolution Flow
+
+```text
+Corporate User
+     |
+Browser requests:
+https://portal.apps.example.com
+     |
+     v
+Corporate DNS Resolver
+AD DNS / Infoblox / Enterprise DNS
+     |
+     | DNS lookup
+     v
+Public DNS hierarchy
+     |
+     v
+Route 53 Public Hosted Zone
+     |
+Returns Alias / DNS answer
+     |
+     +--> CloudFront distribution
+     |
+     +--> API Gateway endpoint
+```
+
+Example:
+
+```text
+portal.apps.example.com
+          |
+          v
+Corporate DNS
+          |
+          v
+Route 53
+          |
+Alias
+          |
+          v
+CloudFront
+```
+
+Route 53's role ends after it returns the DNS answer.
+
+The actual HTTPS request does not pass through Route 53.
+
+---
+
+## B. Web Application Traffic After DNS Resolution
+
+Once the hostname is resolved, the corporate user's browser connects to the returned endpoint.
+
+```text
+Corporate User
+      |
+      | HTTPS 443
+      v
+Corporate Proxy / Firewall / Internet Egress
+      |
+      v
+CloudFront
+      |
+AWS WAF
+      |
+Internet-facing ALB
+      |
+Ingress
+      |
+Kubernetes Service
+      |
+Application Pod
+```
+
+Important interview point:
+
+> Route 53 is not in the HTTP data path. It resolves the hostname. Once DNS resolution is complete, the client connects to CloudFront, API Gateway, or the load balancer returned by DNS.
+
+---
+
+## C. Business API Traffic from the Corporate Network
+
+```text
+Corporate User / Application
+      |
+Corporate DNS
+      |
+Route 53
+      |
+api.apps.example.com
+      |
+Returns API Gateway endpoint
+      |
+Corporate Internet Egress
+      |
+API Gateway
+      |
+AWS WAF
+      |
+VPC Link
+      |
+Internal ALB/NLB
+      |
+Kubernetes Service
+      |
+API Pod
+```
+
+Again, Route 53 performs name resolution only.
+
+---
+
+## D. Internal-Only Corporate Application
+
+If the application must be accessible only from the corporate network, the design can use private DNS and private connectivity instead.
+
+```text
+Corporate User
+      |
+Corporate DNS
+      |
+Conditional Forwarder
+      |
+VPN / Direct Connect
+      |
+Route 53 Resolver Inbound Endpoint
+      |
+Route 53 Private Hosted Zone
+      |
+Internal ALB / Private API
+      |
+EKS
+```
+
+In this model:
+
+- The corporate DNS server forwards the relevant AWS private domain queries.
+- Route 53 Resolver receives those queries inside the VPC.
+- The Private Hosted Zone returns private AWS endpoints.
+- Application traffic travels through VPN or Direct Connect rather than through the public internet.
+
+---
+
+## E. Public vs Internal Corporate Access
+
+### Public corporate-facing application
+
+```text
+Corporate DNS
+      |
+Route 53 Public Hosted Zone
+      |
+CloudFront / API Gateway
+      |
+Internet-facing entry point
+      |
+EKS
+```
+
+### Internal-only corporate application
+
+```text
+Corporate DNS
+      |
+Conditional Forwarding
+      |
+Route 53 Resolver
+      |
+Private Hosted Zone
+      |
+Internal ALB / Private API
+      |
+EKS
+```
+
+For the architecture shown in Section 16, the **public model** is being used because the diagram includes CloudFront, an internet-facing ALB, and Internet/Users.
+
+### Interview-ready answer
+
+> “A corporate user does not directly send application traffic to Route 53. The browser first asks the corporate DNS resolver to resolve the application hostname. If it is a public Route 53 zone, the enterprise DNS resolution chain eventually reaches Route 53, which returns the CloudFront or API Gateway endpoint. The browser then sends HTTPS traffic through the corporate proxy/firewall and internet egress to that endpoint. Route 53 is therefore part of DNS resolution, not the HTTP data path. For an internal-only application, I would use corporate DNS conditional forwarding to Route 53 Resolver and a Private Hosted Zone over VPN or Direct Connect.”
+
