@@ -103,7 +103,7 @@ For a low RTO design, the DR Region should already have the baseline platform av
 | Kubernetes manifests | GitOps / Git | ~0 for declared config | ~1–5 min | ArgoCD/Flux can redeploy quickly |
 | ECR images | Cross-Region replication | Seconds/minutes in normal conditions | Near-zero if image already present | Validate critical images exist in DR |
 | Aurora Global Database | Cross-Region replication | Typically seconds | Typically minutes | AWS documents RPO in seconds and RTO in minutes |
-| S3 | CRR + optional S3 RTC | Up to ~15 min target with RTC | Minutes | RTC provides a predictable 15-minute replication objective |
+| S3 | CRR + optional S3 RTC | Up to ~15 min target with RTC(replication time control) | Minutes | RTC provides a predictable 15-minute replication objective |
 | EFS | EFS cross-Region replication | ~15 min for most file systems | ~5–15 min if DR mount targets are ready | Destination networking must be pre-created |
 | EBS snapshot DR | Snapshots + cross-Region copy | Snapshot interval + copy lag; often ~1 hour in simple designs | ~30–60+ min | Restore volume, PV/PVC, attach, mount, validate |
 | EC2 + EBS using AWS DRS | Continuous block replication | Sub-second / seconds typical | ~5–20 min typical | Strong fit for server-level DR |
