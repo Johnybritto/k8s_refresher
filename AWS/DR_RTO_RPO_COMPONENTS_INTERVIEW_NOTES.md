@@ -519,3 +519,125 @@ subject to application validation and tested automation.
 # 16. Interview-Ready Answer
 
 > “For regional DR I calculate RTO and RPO for every critical dependency, not only for EKS. Kubernetes manifests can be recreated almost immediately from GitOps, but stateful services determine the real recovery objective. Aurora Global Database typically gives seconds-level RPO and minutes-level RTO. S3 with RTC can target replication within 15 minutes. EFS replication gives about a 15-minute RPO for most file systems. EBS snapshot-based recovery has an RPO based on snapshot frequency and usually a much longer RTO because the volume must be restored and rebound to the workload. For an EC2 server with EBS and aggressive objectives, AWS DRS provides continuous block replication with sub-second/seconds RPO and typically 5–20 minute RTO. For an EKS EBS-backed PVC, I would not rely on DRS as the normal PVC mechanism; I would protect the application data separately and recreate the Kubernetes storage objects in the DR cluster. The overall application RPO is set by the slowest critical stateful component, and the overall RTO is set by the critical recovery path.”
+
+---
+
+# 17. Velero and Portworx — Restoring EKS PV/PVC in DR
+
+**Follow-up to Section 7: “DRS Is Not the Normal EKS PVC DR Mechanism.”**
+
+**Short answer:** Yes — Velero and Portworx Backup are Kubernetes-aware tools that can help restore **both** Kubernetes objects (PVC, workloads, and where appropriate PVs) **and their backed-up volume data** into a DR cluster. The storage restoration method and destination CSI/StorageClass configuration decide how the *new* PV and underlying disk are created and bound.
+
+**Do not confuse:**
+
+- **AWS DRS** protects/relaunches EC2 servers and their attached disks. It does **not** independently recreate EKS PVC/PV/StatefulSet/CSI bindings.
+- **Velero** is an **open-source** Kubernetes backup/restore tool: backs up Kubernetes resource definitions and optionally their persistent data through CSI snapshots, a CSI snapshot **data mover**, or file-system backup.
+- **Portworx Backup (PX-Backup)** is a commercial Kubernetes application backup/restore tool; it protects Kubernetes resources and supported PVC data, including cross-cluster restore with a compatible target storage provisioner.
+- **Portworx Enterprise / PX-DR** is **different from PX-Backup**: it can supply storage and Kubernetes application replication/failover through supported synchronous or asynchronous DR architectures.
+
+## 17.1 The mental model — who restores the PVC?
+
+| DR method | How the DR EBS volume gets there | How the DR PV/PVC appears |
+|---|---|---|
+| DRS applied to EC2 + EBS | DRS launches a **recovered EC2 instance with recovered disks**; reusing a disk in EKS needs additional careful detach/clone workflow | **Not automatic**. Create a static PV with the *DR* EBS volume ID, bind a PVC, and deploy the workload |
+| EBS snapshot copied to DR | Snapshot is copied and a new DR EBS volume is restored (or restored via a supported CSI snapshot workflow) | Static PV/PVC **or** a configured CSI-aware restore tool provisions and binds volume |
+| **Velero** backup/restore | From CSI snapshots available in DR, or transferred backup data (CSI Snapshot Data Movement / file-system backup) | Velero restores the PVC and other selected Kubernetes objects; CSI/restoration workflow creates/binds the usable target volume/PV |
+| **Portworx Backup** | Restores backed-up application data using a supported destination storage integration | Restores PVC and application resources; compatible destination StorageClass/CSI provisions/binds PV |
+| **Portworx Enterprise PX-DR** | Replicates supported application data between paired Kubernetes clusters | Supported DR workflow coordinates Kubernetes resource migration and application activation |
+
+**Key rule:** Backing up YAML **alone** only recreates PVC *definitions*. To recover actual application data, you must configure **volume-data backup/replication and restoration**. The original EBS volume ID from the primary region must not simply be reused in the secondary region.
+
+## 17.2 Velero example — EKS primary to DR cluster
+
+~~~mermaid
+flowchart TB
+    subgraph P["Primary Region / EKS"]
+      APP["Application Pod"]
+      PVC["PVC + EBS-backed PV"]
+      V["Velero Backup"]
+      APP --> PVC --> V
+    end
+    B[("Backup Location<br/>Kubernetes objects + volume backup data")]
+    subgraph R["DR Region / EKS"]
+      VR["Velero Restore"]
+      K["Restore PVC and application objects"]
+      CSI["Target EBS CSI + StorageClass<br/>Provision / restore volume and bind PV"]
+      POD["Application Pod mounts recovered data"]
+      VR --> K --> CSI --> POD
+    end
+    V -->|"Copy / data movement<br/>accessible across Regions"| B
+    B --> VR
+~~~
+
+**Prepare before disaster:**
+
+1. Deploy a DR EKS cluster (warm standby for lower RTO), EBS CSI driver, adequate node capacity, IAM/KMS permissions, and a working **DR StorageClass**.
+2. Install/configure Velero on both clusters. Configure the backup location/repository so the DR cluster can access the backups.
+3. Choose a data-protection method that **actually makes volume data available in the DR Region**: for example CSI snapshot data movement or file-system backup to a cross-region-accessible repository, or a suitable snapshot-copy workflow. An EBS snapshot that exists **only in the original Region** is not enough.
+4. Ensure the target StorageClass and CSI driver are compatible; remap classes when needed. Make sure the restored EBS volume and scheduled pod are in the same AZ.
+5. For databases, ensure an **application-consistent** recovery strategy (hooks, quiescing, or application-native backup) rather than assuming a crash-consistent disk snapshot is always sufficient.
+
+**On failover (simplified):**
+
+~~~bash
+# In the DR EKS context; backup must be visible to DR Velero
+velero backup get
+velero restore create app-dr --from-backup app-backup
+velero restore describe app-dr --details
+
+# Confirm the storage is bound and the workload can mount it
+kubectl get pvc,pv -n myapp
+kubectl get pods -n myapp
+~~~
+
+The restore creates/recreates the selected Kubernetes objects and invokes the configured CSI/data-restoration workflow. **It does not mean the original source-region EBS volume moves to the DR Region.** A fresh target volume is provisioned/restored from the recoverable data.
+
+Verify restored file/database content, application readiness and dependency connectivity **before routing users**.
+
+## 17.3 Where Portworx fits
+
+**Portworx Backup (backup/restore):**
+
+~~~text
+Primary Kubernetes app + PVC + persistent data
+       |
+  PX-Backup job → backup destination
+       |
+  PX-Backup restore on DR cluster
+       |
+  Restore app resources + PVC and backed-up data
+       |
+  Destination storage/CSI binds PV → start app
+~~~
+
+**Portworx Enterprise PX-DR (replication/failover):**
+
+~~~text
+Primary Kubernetes cluster + Portworx storage
+       |
+  Supported synchronous or asynchronous replication
+       |
+  Secondary Kubernetes cluster + Portworx storage
+       |
+  DR workflow activates protected application + data
+~~~
+
+PX-DR provides capabilities different from simply running periodic backups. **Synchronous** versus **asynchronous** DR has different infrastructure, latency and RPO implications; do not assert that any Portworx installation gives zero RPO. Product/version/storage-class restrictions must be checked.
+
+## 17.4 RPO / RTO — interview distinction
+
+- **Velero and PX-Backup with periodic backups:** RPO generally depends on the backup interval, completion time and availability of the backup data in DR. RTO includes recreating resources, restoring data, volume binding/mounting and app checks.
+- **Portworx PX-DR replication:** RPO/RTO depend on **synchronous vs asynchronous** DR setup, network characteristics, supported platforms and tested failover procedures.
+- **DRS:** EC2-level recovery targets do not imply that EKS PV/PVC and application wiring are recovered within the same RTO.
+- **Regardless of tooling:** verify data consistency, access modes, AZ placement, KMS, storage class mapping, application startup and failback.
+
+**Interview answer:**
+
+> “DRS can recover the EC2 server and disk, but it doesn't rebuild the Kubernetes PVC/PV mapping. For EKS persistent volumes I'd normally use a Kubernetes-aware tool such as Velero or Portworx Backup to restore both workload definitions and backed-up volume data into a DR cluster. Velero can combine resource restoration with CSI snapshots, snapshot data movement or filesystem backup. Portworx also offers PX-DR replication capabilities, which are distinct from backup/restore. The destination CSI driver provisions or binds storage, and I confirm PVC Bound, correct data, and application readiness. RPO and RTO depend on the backup or replication method — not merely the tool's name.”
+
+**Official references:**
+
+- Velero CSI Snapshot Data Movement: https://velero.io/docs/v1.18/csi-snapshot-data-movement/
+- Velero CSI integration: https://velero.io/docs/main/csi/
+- Portworx Backup restore documentation: https://docs.portworx.com/portworx-backup-on-prem/use-px-backup/backup-restore/restore-backup/restore-namespace-backup
+- Portworx Enterprise disaster recovery options: https://docs.portworx.com/portworx-enterprise/operations/disaster-recovery
