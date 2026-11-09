@@ -29,7 +29,64 @@ Backend Pod
 > Important: the Ingress object itself is **not** a network hop. It is configuration consumed by the ingress controller.
 
 ---
-
+```
+Client
+  |
+  | Destination: 10.0.1.10:30443
+  v
+Node-1 (10.0.1.10)
+  |
+  v
+Node NIC (eth0)
+  |
+  v
+Linux Kernel Network Stack
+  |
+  v
+netfilter PREROUTING
+  |
+  v
+kube-proxy programmed iptables rules
+  |
+  | NodePort 30443 matches
+  | Ingress Controller Service
+  |
+  v
+Service Endpoint Selection
+  |
+  | Selected Ingress Pod: 10.244.2.15:443
+  |
+  v
+DNAT
+  |
+  | 10.0.1.10:30443
+  |        ↓
+  | 10.244.2.15:443
+  |
+  v
+Linux Routing Decision
+  |
+  v
+CNI Network (Calico / OVN / Cilium)
+  |
+  | Ingress Pod on Node-2
+  v
+Node-2
+  |
+  v
+Pod veth Interface
+  |
+  v
+Ingress Controller Pod
+  |
+  v
+NGINX listens on port 443
+  |
+  | TLS termination (if configured)
+  | Reads Host / Path
+  v
+Routes to Application Backend
+```
 ## 1. Client sends traffic to the application URL
 
 Example:
